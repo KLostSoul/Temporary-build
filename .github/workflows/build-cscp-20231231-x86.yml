@@ -1,4 +1,4 @@
-name: Build CSCP 2023-12-31 ePC-8801MA x86 historical VS2017 channel
+name: Probe CSCP 2023-12-31 x86 exact27051 compiler options
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  probe:
     runs-on: windows-2022
     steps:
       - name: Checkout build host
@@ -23,119 +23,26 @@ jobs:
           ref: b6183f5e93307c03ff77a5942dc62cd8cef18b0c
           path: cscp-20231231
 
-      - name: Recreate original absolute source path
+      - name: Install fixed VS2022 17.8.3 with exact v141 27051
         shell: powershell
         run: |
-          $src = Join-Path $env:GITHUB_WORKSPACE 'cscp-20231231'
-          $dst = 'D:\Develop\common\history\source'
-          if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
-          New-Item -ItemType Directory -Path $dst -Force | Out-Null
-          robocopy $src $dst /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
-          $rc = $LASTEXITCODE
-          if ($rc -gt 7) { throw "robocopy failed: $rc" }
-          $global:LASTEXITCODE = 0
-          $proj = Join-Path $dst 'vc++2017\pc8801ma.vcxproj'
-          if (!(Test-Path $proj)) { throw "pc8801ma.vcxproj missing at original path: $proj" }
-          "PC8801MA_PROJ=$proj" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $bootstrapper = Join-Path $env:RUNNER_TEMP 'vs_BuildTools_17.8.3.exe'
+          $uri = 'https://download.visualstudio.microsoft.com/download/pr/63b5064f-af60-4cbe-96cd-a9dd9d41ee3d/436695f5b9083e37a62f63326dd4c2757b5780316f2c7e6ba0fdcee0770bfe67/vs_BuildTools.exe'
+          Invoke-WebRequest -Uri $uri -OutFile $bootstrapper
+          $installPath = 'C:\VS2022_17.8.3'
+          $args = @('install','--installPath',$installPath,'--add','Microsoft.VisualStudio.Workload.VCTools','--add','Microsoft.VisualStudio.Component.VC.v141.x86.x64','--includeRecommended','--quiet','--wait','--norestart','--nocache')
+          $p = Start-Process -FilePath $bootstrapper -ArgumentList $args -Wait -PassThru
+          if ($p.ExitCode -notin 0,3010) { throw "VS 17.8.3 install failed: $($p.ExitCode)" }
+          $tool = "$installPath\VC\Tools\MSVC\14.16.27023"
+          if (!(Test-Path "$tool\bin\Hostx86\x86\cl.exe")) { throw 'v141 14.16.27023 missing' }
+          "VS1783=$installPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Download verified VS2017 15.9.58 bootstrapper
-        shell: powershell
-        run: |
-          $uri = 'https://download.visualstudio.microsoft.com/download/pr/d7dfc774-2e06-4d37-bb6f-0ec5b109153d/137b8591f2c772d0fe53225015eab5f2e75d0d51cf9c384a0ab5162e2aecaf59/vs_BuildTools.exe'
-          $exe = Join-Path $env:RUNNER_TEMP 'vs_BuildTools_15.9.58.exe'
-          Invoke-WebRequest -Uri $uri -OutFile $exe
-          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
-          if ($hash -ne '137B8591F2C772D0FE53225015EAB5F2E75D0D51CF9C384A0AB5162E2AECAF59') { throw "bootstrapper hash mismatch: $hash" }
-          "VS1558_BOOTSTRAPPER=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Recover final VS2017 release channel snapshot before 2024
-        shell: powershell
-        run: |
-          $target = 'https://aka.ms/vs/15/release/channel'
-          $cdxUrl = 'https://web.archive.org/cdx/search/cdx?url=' + [uri]::EscapeDataString($target) + '&from=2023&to=2023&output=json&fl=timestamp,original,statuscode,mimetype,digest'
-          Write-Host "CDX=$cdxUrl"
-          $rows = Invoke-RestMethod -Uri $cdxUrl -TimeoutSec 120
-          if (!$rows -or $rows.Count -lt 2) { throw 'No 2023 Wayback snapshots found for VS2017 release channel' }
-          $data = @($rows | Select-Object -Skip 1)
-          Write-Host 'Latest archived records:'
-          $data | Where-Object { $_[0] -le '20231231235959' } | Sort-Object { $_[0] } -Descending | Select-Object -First 15 | ForEach-Object {
-            Write-Host ("  {0} status={1} mime={2} digest={3}" -f $_[0],$_[2],$_[3],$_[4])
-          }
-          $candidates = $data | Where-Object { $_[0] -le '20231231235959' } | Sort-Object { $_[0] } -Descending
-          if (!$candidates) { throw 'No snapshot at or before 2023-12-31' }
-
-          $channel = Join-Path $env:RUNNER_TEMP 'VS2017_20231231_ChannelManifest.json'
-          $selected = $null
-          foreach ($row in $candidates) {
-            $ts = [string]$row[0]
-            $replay = "https://web.archive.org/web/${ts}id_/$target"
-            try {
-              Invoke-WebRequest -Uri $replay -OutFile $channel -MaximumRedirection 20 -TimeoutSec 120
-              $raw = Get-Content $channel -Raw
-              $obj = $raw | ConvertFrom-Json
-              if ($obj.info.manifestName -eq 'VisualStudio.15.Release') {
-                Write-Host "Candidate $ts -> $($obj.info.productDisplayVersion) build=$($obj.info.buildVersion)"
-                if ($obj.info.productDisplayVersion -eq '15.9.58') {
-                  $selected = @{ Timestamp=$ts; Raw=$raw; Obj=$obj }
-                  break
-                }
-              }
-            } catch {
-              Write-Host "Candidate $ts failed: $($_.Exception.Message)"
-            }
-          }
-          if (!$selected) { throw 'Could not recover a 15.9.58 VS2017 channel snapshot before 2024' }
-          Set-Content -Path $channel -Value $selected.Raw -Encoding UTF8 -NoNewline
-          $fileUri = ([System.Uri]$channel).AbsoluteUri
-          Write-Host "SELECTED_WAYBACK_TIMESTAMP=$($selected.Timestamp)"
-          Write-Host "SELECTED_VERSION=$($selected.Obj.info.productDisplayVersion)"
-          Write-Host "SELECTED_BUILD=$($selected.Obj.info.buildVersion)"
-          "HIST_CHANNEL=$channel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "HIST_CHANNEL_URI=$fileUri" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "WAYBACK_TS=$($selected.Timestamp)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Install VS2017 Build Tools from recovered 15.9.58 channel
-        shell: powershell
-        run: |
-          $installPath = 'C:\VS2017_HIST'
-          $args = @(
-            '--installPath', $installPath,
-            '--productId', 'Microsoft.VisualStudio.Product.BuildTools',
-            '--channelId', 'VisualStudio.15.Release',
-            '--channelUri', $env:HIST_CHANNEL_URI,
-            '--installChannelUri', $env:HIST_CHANNEL_URI,
-            '--add', 'Microsoft.VisualStudio.Workload.VCTools',
-            '--includeRecommended',
-            '--quiet', '--wait', '--norestart', '--nocache'
-          )
-          $p = Start-Process -FilePath $env:VS1558_BOOTSTRAPPER -ArgumentList $args -Wait -PassThru
-          if ($p.ExitCode -notin 0,3010) { throw "historical VS2017 install failed: $($p.ExitCode)" }
-          if (!(Test-Path "$installPath\MSBuild\15.0\Bin\MSBuild.exe")) { throw 'MSBuild 15 missing' }
-          if (!(Test-Path "$installPath\VC\Auxiliary\Build\vcvars32.bat")) { throw 'VC environment missing' }
-          "VS_HIST=$installPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Require exact VS2017 15.9.58 product
-        shell: powershell
-        run: |
-          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
-          $json = & $vswhere -path $env:VS_HIST -format json | ConvertFrom-Json
-          if (!$json) { throw 'historical VS2017 installation not found by vswhere' }
-          $ver = $json[0].installationVersion
-          Write-Host "VS_INSTALLATION_VERSION=$ver"
-          if ($ver -ne '15.9.34118.181') { throw "unexpected VS2017 product build: $ver" }
-
-      - name: Require exact compiler linker and report MSBuild
+      - name: Require exact compiler and linker 27051
         shell: cmd
         run: |
-          call "%VS_HIST%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
-          echo === MSBUILD ===
-          "%VS_HIST%\MSBuild\15.0\Bin\MSBuild.exe" -version
-          echo === CL ===
-          cl 2>&1
+          call "%VS1783%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
           cl 2>&1 | findstr /C:"19.16.27051"
           if errorlevel 1 exit /b 51
-          echo === LINK ===
-          link 2>&1
           link 2>&1 | findstr /C:"14.16.27051"
           if errorlevel 1 exit /b 52
 
@@ -144,54 +51,96 @@ jobs:
         run: |
           $sdk = Join-Path $env:RUNNER_TEMP 'winsdk81-setup.exe'
           Invoke-WebRequest -Uri 'https://download.microsoft.com/download/B/0/C/B0C80BA3-8AD6-4958-810B-6882485230B5/standalonesdk/sdksetup.exe' -OutFile $sdk
-          $log = Join-Path $env:RUNNER_TEMP 'winsdk81-install.log'
-          $p = Start-Process -FilePath $sdk -ArgumentList '/Quiet','/NoRestart',"/Log $log" -Wait -PassThru
-          if ($p.ExitCode -notin 0,3010) {
-            if (Test-Path $log) { Get-Content $log -Tail 150 }
-            throw "Windows 8.1 SDK installer failed: $($p.ExitCode)"
+          $p = Start-Process -FilePath $sdk -ArgumentList '/Quiet','/NoRestart' -Wait -PassThru
+          if ($p.ExitCode -notin 0,3010) { throw "Windows 8.1 SDK installer failed: $($p.ExitCode)" }
+
+      - name: Run compiler option probes against known-good text hash
+        shell: powershell
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'cscp-20231231\vc++2017'
+          $msbuild = Join-Path $env:VS1783 'MSBuild\Current\Bin\MSBuild.exe'
+          $vcvars = Join-Path $env:VS1783 'VC\Auxiliary\Build\vcvars32.bat'
+          $targetHash = '180A2FECA9FA1E0469194ABB84895100B5F0D242BA239FFD7C94D127C0679667'
+          $targetEntry = 0x73DB5
+          $targetVirtualSize = 811392
+
+          $variants = @(
+            @{Name='baseline'; Flags=''},
+            @{Name='Oy_minus'; Flags='/Oy-'},
+            @{Name='GS_minus'; Flags='/GS-'},
+            @{Name='Oi_minus'; Flags='/Oi-'},
+            @{Name='Ob1'; Flags='/Ob1'},
+            @{Name='Ob0'; Flags='/Ob0'},
+            @{Name='favor_size'; Flags='/Os'},
+            @{Name='favor_speed'; Flags='/Ot'},
+            @{Name='fp_fast'; Flags='/fp:fast'},
+            @{Name='fp_strict'; Flags='/fp:strict'},
+            @{Name='zc_inline_minus'; Flags='/Zc:inline-'},
+            @{Name='gw_on'; Flags='/Gw'},
+            @{Name='gw_off'; Flags='/Gw-'},
+            @{Name='sdl_on'; Flags='/sdl'},
+            @{Name='sdl_off'; Flags='/sdl-'},
+            @{Name='volatile_iso'; Flags='/volatile:iso'},
+            @{Name='volatile_ms'; Flags='/volatile:ms'}
+          )
+
+          $report = @()
+          $matched = $false
+          foreach ($v in $variants) {
+            Write-Host "===== PROBE $($v.Name) FLAGS=[$($v.Flags)] ====="
+            $flags = $v.Flags
+            $cmd = "call `"$vcvars`" -vcvars_ver=14.16 && set `_CL_=$flags && cd /d `"$source`" && `"$msbuild`" pc8801ma.vcxproj /t:Clean;Rebuild /p:Configuration=Release /p:Platform=Win32 /p:VCToolsVersion=14.16.27023 /m /v:minimal"
+            & cmd.exe /d /s /c $cmd
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "BUILD_FAILED $($v.Name) rc=$LASTEXITCODE"
+              $report += [pscustomobject]@{Name=$v.Name;Flags=$flags;Status='BUILD_FAILED';Size='';Entry='';TextVirtualSize='';TextSHA256=''}
+              continue
+            }
+            $exe = Join-Path $source 'bin\x86\Release\pc8801ma.exe'
+            if (!(Test-Path $exe)) { throw "missing output for $($v.Name)" }
+            $bytes = [IO.File]::ReadAllBytes($exe)
+            $pe = [BitConverter]::ToInt32($bytes,0x3C)
+            $entry = [BitConverter]::ToUInt32($bytes,$pe+40)
+            $numSections = [BitConverter]::ToUInt16($bytes,$pe+6)
+            $optSize = [BitConverter]::ToUInt16($bytes,$pe+20)
+            $sec = $pe + 24 + $optSize
+            $textRawPtr=0; $textRawSize=0; $textVirtualSize=0
+            for($i=0;$i -lt $numSections;$i++) {
+              $o=$sec+$i*40
+              $name=[Text.Encoding]::ASCII.GetString($bytes,$o,8).Trim([char]0)
+              if($name -eq '.text') {
+                $textVirtualSize=[BitConverter]::ToUInt32($bytes,$o+8)
+                $textRawSize=[BitConverter]::ToUInt32($bytes,$o+16)
+                $textRawPtr=[BitConverter]::ToUInt32($bytes,$o+20)
+                break
+              }
+            }
+            $sha=[Security.Cryptography.SHA256]::Create()
+            $textHash=([BitConverter]::ToString($sha.ComputeHash($bytes,$textRawPtr,$textRawSize))).Replace('-','')
+            $isMatch=($textHash -eq $targetHash)
+            $shapeMatch=($entry -eq $targetEntry -and $textVirtualSize -eq $targetVirtualSize)
+            Write-Host ("RESULT {0}: Size={1} Entry=0x{2:X} TextVS={3} TextSHA={4} EXACT={5} SHAPE={6}" -f $v.Name,$bytes.Length,$entry,$textVirtualSize,$textHash,$isMatch,$shapeMatch)
+            $report += [pscustomobject]@{Name=$v.Name;Flags=$flags;Status='OK';Size=$bytes.Length;Entry=('0x{0:X}' -f $entry);TextVirtualSize=$textVirtualSize;TextSHA256=$textHash;Exact=$isMatch;Shape=$shapeMatch}
+            if ($isMatch) {
+              Copy-Item $exe (Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231231_x86_MATCH.exe') -Force
+              $matched=$true
+              break
+            }
+            if ($shapeMatch) {
+              Copy-Item $exe (Join-Path $env:GITHUB_WORKSPACE ("candidate_{0}.exe" -f $v.Name)) -Force
+            }
           }
-          if (!(Test-Path 'C:\Program Files (x86)\Windows Kits\8.1\Include\um\Windows.h')) { throw 'Windows 8.1 SDK missing' }
+          $report | Format-Table -AutoSize | Out-String -Width 240 | Tee-Object -FilePath (Join-Path $env:GITHUB_WORKSPACE 'probe-report.txt') | Write-Host
+          $report | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $env:GITHUB_WORKSPACE 'probe-report.json') -Encoding UTF8
+          if ($matched) { Write-Host '*** EXACT .TEXT MATCH FOUND ***' } else { Write-Host 'No exact .text match in first probe set.' }
 
-      - name: Verify original project settings
-        shell: powershell
-        run: |
-          $text = Get-Content $env:PC8801MA_PROJ -Raw
-          if ($text -notmatch '<PlatformToolset>v141</PlatformToolset>') { throw 'project is not v141' }
-          if ($text -notmatch '<WindowsTargetPlatformVersion>8\.1</WindowsTargetPlatformVersion>') { throw 'project is not SDK 8.1' }
-
-      - name: Build with exact historical VS2017 environment
-        shell: cmd
-        working-directory: D:\Develop\common\history\source\vc++2017
-        run: |
-          call "%VS_HIST%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
-          "%VS_HIST%\MSBuild\15.0\Bin\MSBuild.exe" pc8801ma.vcxproj /t:clean;rebuild /p:Configuration=Release;Platform="Win32" /v:minimal
-
-      - name: Verify exact historical output
-        shell: powershell
-        run: |
-          $exe = 'D:\Develop\common\history\source\vc++2017\bin\x86\Release\pc8801ma.exe'
-          if (!(Test-Path $exe)) { throw 'pc8801ma.exe not found' }
-          $bytes = [System.IO.File]::ReadAllBytes($exe)
-          $pe = [BitConverter]::ToInt32($bytes,0x3C)
-          $machine = [BitConverter]::ToUInt16($bytes,$pe+4)
-          $magic = [BitConverter]::ToUInt16($bytes,$pe+24)
-          $entry = [BitConverter]::ToUInt32($bytes,$pe+40)
-          $majorLinker = $bytes[$pe+26]
-          $minorLinker = $bytes[$pe+27]
-          if ($machine -ne 0x014c -or $magic -ne 0x010b) { throw 'output is not PE32 i386' }
-          if ($majorLinker -ne 14 -or $minorLinker -ne 16) { throw "linker header mismatch $majorLinker.$minorLinker" }
-          Write-Host "SIZE=$($bytes.Length)"
-          Write-Host ('ENTRY_RVA=0x{0:X8}' -f $entry)
-          $ascii=[Text.Encoding]::ASCII.GetString($bytes)
-          $pdb='D:\Develop\common\history\source\vc++2017\bin\x86\Release\pc8801ma.pdb'
-          if (!$ascii.Contains($pdb)) { throw 'PDB path mismatch' }
-          $dst=Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231231_x86_exact_2023env.exe'
-          Copy-Item $exe $dst
-          Get-FileHash $dst -Algorithm SHA256
-
-      - name: Upload exact historical executable
+      - name: Upload probe report and candidates
         uses: actions/upload-artifact@v4
         with:
-          name: pc8801ma-20231231-x86-exact-2023env
-          path: pc8801ma_20231231_x86_exact_2023env.exe
-          if-no-files-found: error
+          name: exact27051-option-probe
+          path: |
+            probe-report.txt
+            probe-report.json
+            pc8801ma_20231231_x86_MATCH.exe
+            candidate_*.exe
+          if-no-files-found: warn
