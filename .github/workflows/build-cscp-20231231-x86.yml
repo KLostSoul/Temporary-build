@@ -1,4 +1,4 @@
-name: Build CSCP 2023-12-31 ePC-8801MA x86 exact 27051
+name: Build CSCP 2023-12-31 ePC-8801MA x86 MSBuild15 exact27051
 
 on:
   push:
@@ -39,35 +39,54 @@ jobs:
           "SOURCE_ROOT=$dst" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "PC8801MA_PROJ=$proj" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Install fixed Visual Studio 2022 17.8.3 Build Tools with v141
+      - name: Install fixed VS2022 17.8.3 only as exact v141 27051 source
         shell: powershell
         run: |
-          $bootstrapper = Join-Path $env:RUNNER_TEMP 'vs_BuildTools_17.8.3_LTSC.exe'
+          $bootstrapper = Join-Path $env:RUNNER_TEMP 'vs_BuildTools_17.8.3.exe'
           $uri = 'https://download.visualstudio.microsoft.com/download/pr/63b5064f-af60-4cbe-96cd-a9dd9d41ee3d/436695f5b9083e37a62f63326dd4c2757b5780316f2c7e6ba0fdcee0770bfe67/vs_BuildTools.exe'
           Invoke-WebRequest -Uri $uri -OutFile $bootstrapper
           $installPath = 'C:\VS2022_17.8.3'
-          $args = @(
-            'install',
-            '--installPath', $installPath,
-            '--add', 'Microsoft.VisualStudio.Workload.VCTools',
-            '--add', 'Microsoft.VisualStudio.Component.VC.v141.x86.x64',
-            '--includeRecommended',
-            '--quiet', '--wait', '--norestart', '--nocache'
-          )
+          $args = @('install','--installPath',$installPath,'--add','Microsoft.VisualStudio.Workload.VCTools','--add','Microsoft.VisualStudio.Component.VC.v141.x86.x64','--includeRecommended','--quiet','--wait','--norestart','--nocache')
           $p = Start-Process -FilePath $bootstrapper -ArgumentList $args -Wait -PassThru
-          if ($p.ExitCode -notin 0,3010) { throw "VS 17.8.3 fixed bootstrapper failed: $($p.ExitCode)" }
-          if (!(Test-Path "$installPath\VC\Auxiliary\Build\vcvars32.bat")) { throw 'fixed VS2022 17.8.3 C++ tools missing' }
-          $tool = Get-ChildItem "$installPath\VC\Tools\MSVC" -Directory | Where-Object { $_.Name -eq '14.16.27023' } | Select-Object -First 1
-          if (!$tool) { throw 'fixed VS2022 17.8.3 did not install v141 14.16.27023' }
-          "VS1783=$installPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "V141DIR=$($tool.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($p.ExitCode -notin 0,3010) { throw "VS2022 17.8.3 fixed bootstrapper failed: $($p.ExitCode)" }
+          $tool = 'C:\VS2022_17.8.3\VC\Tools\MSVC\14.16.27023'
+          if (!(Test-Path "$tool\bin\Hostx86\x86\cl.exe")) { throw 'exact v141 source toolset missing' }
+          "EXACT_V141=$tool" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Require compiler and linker 27051 exactly
+      - name: Install Visual Studio 2017 Build Tools and VC targets
+        shell: powershell
+        run: |
+          choco install visualstudio2017buildtools -y --package-parameters "--locale en-US"
+          if ($LASTEXITCODE -notin 0,1641,3010) { throw "visualstudio2017buildtools failed: $LASTEXITCODE" }
+          choco install visualstudio2017-workload-vctools -y --package-parameters "--includeRecommended"
+          if ($LASTEXITCODE -notin 0,1641,3010) { throw "visualstudio2017-workload-vctools failed: $LASTEXITCODE" }
+          $vs17 = 'C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools'
+          if (!(Test-Path "$vs17\MSBuild\15.0\Bin\MSBuild.exe")) { throw 'VS2017 MSBuild 15 missing' }
+          if (!(Test-Path "$vs17\VC\Auxiliary\Build\vcvars32.bat")) { throw 'VS2017 VC targets missing' }
+          "VS17=$vs17" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Replace VS2017 serviced v141 payload with exact 27051 payload
+        shell: powershell
+        run: |
+          $dst = Join-Path $env:VS17 'VC\Tools\MSVC\14.16.27023'
+          if (!(Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }
+          robocopy $env:EXACT_V141 $dst /MIR /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
+          $rc = $LASTEXITCODE
+          if ($rc -gt 7) { throw "toolset robocopy failed: $rc" }
+          $global:LASTEXITCODE = 0
+
+      - name: Require VS2017 environment with compiler and linker 27051 exactly
         shell: cmd
         run: |
-          call "%VS1783%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
+          call "%VS17%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
+          echo === MSBUILD15 ===
+          "%VS17%\MSBuild\15.0\Bin\MSBuild.exe" -version
+          echo === CL ===
+          cl 2>&1
           cl 2>&1 | findstr /C:"19.16.27051"
           if errorlevel 1 exit /b 51
+          echo === LINK ===
+          link 2>&1
           link 2>&1 | findstr /C:"14.16.27051"
           if errorlevel 1 exit /b 52
 
@@ -91,55 +110,46 @@ jobs:
           if ($text -notmatch '<PlatformToolset>v141</PlatformToolset>') { throw 'project is not v141' }
           if ($text -notmatch '<WindowsTargetPlatformVersion>8\.1</WindowsTargetPlatformVersion>') { throw 'project is not SDK 8.1' }
 
-      - name: Build at original path using original command shape
+      - name: Build with VS2017 MSBuild 15 using original command shape
         shell: cmd
         working-directory: D:\Develop\common\history\source\vc++2017
         run: |
-          call "%VS1783%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
-          "%VS1783%\MSBuild\Current\Bin\MSBuild.exe" pc8801ma.vcxproj /t:clean;rebuild /p:Configuration=Release;Platform="Win32" /p:VCToolsVersion=14.16.27023 /v:minimal
+          call "%VS17%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
+          "%VS17%\MSBuild\15.0\Bin\MSBuild.exe" pc8801ma.vcxproj /t:clean;rebuild /p:Configuration=Release;Platform="Win32" /p:VCToolsVersion=14.16.27023 /v:minimal
 
-      - name: Verify path-matched output
+      - name: Verify MSBuild15 output
         shell: powershell
         run: |
           $exe = 'D:\Develop\common\history\source\vc++2017\bin\x86\Release\pc8801ma.exe'
           if (!(Test-Path $exe)) { throw 'pc8801ma.exe not found' }
           $bytes = [System.IO.File]::ReadAllBytes($exe)
-          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
-          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
-          $magic = [BitConverter]::ToUInt16($bytes, $pe + 24)
-          $entry = [BitConverter]::ToUInt32($bytes, $pe + 40)
-          $majorLinker = $bytes[$pe + 26]
-          $minorLinker = $bytes[$pe + 27]
+          $pe = [BitConverter]::ToInt32($bytes,0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes,$pe+4)
+          $magic = [BitConverter]::ToUInt16($bytes,$pe+24)
+          $entry = [BitConverter]::ToUInt32($bytes,$pe+40)
+          $majorLinker = $bytes[$pe+26]
+          $minorLinker = $bytes[$pe+27]
           if ($machine -ne 0x014c -or $magic -ne 0x010b) { throw 'output is not PE32 i386' }
-          if ($majorLinker -ne 14 -or $minorLinker -ne 16) { throw "linker header is $majorLinker.$minorLinker" }
+          if ($majorLinker -ne 14 -or $minorLinker -ne 16) { throw "linker header mismatch $majorLinker.$minorLinker" }
           if ($bytes.Length -ne 1030144) { throw "size mismatch: $($bytes.Length)" }
           Write-Host ('ENTRY_RVA=0x{0:X8}' -f $entry)
-
-          $rich = -1
-          for ($i=0; $i -le [Math]::Min($pe-8,$bytes.Length-8); $i++) {
-            if ($bytes[$i] -eq 0x52 -and $bytes[$i+1] -eq 0x69 -and $bytes[$i+2] -eq 0x63 -and $bytes[$i+3] -eq 0x68) { $rich=$i; break }
-          }
-          if ($rich -lt 0) { throw 'Rich header not found' }
-          $key = [BitConverter]::ToUInt32($bytes,$rich+4)
-          $found27051 = $false
-          for ($o=0x90; $o -lt $rich; $o+=8) {
-            $compid = [BitConverter]::ToUInt32($bytes,$o) -bxor $key
-            $build = $compid -band 0xFFFF
-            if ($build -eq 27051) { $found27051=$true }
-          }
-          if (!$found27051) { throw 'output Rich header is not build 27051' }
-
-          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
-          $expectedPdb = 'D:\Develop\common\history\source\vc++2017\bin\x86\Release\pc8801ma.pdb'
-          if (!$ascii.Contains($expectedPdb)) { throw 'PDB path does not match working executable path' }
-
-          $dst = Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231231_x86_27051_pathmatch.exe'
+          $ascii=[Text.Encoding]::ASCII.GetString($bytes)
+          $pdb='D:\Develop\common\history\source\vc++2017\bin\x86\Release\pc8801ma.pdb'
+          if (!$ascii.Contains($pdb)) { throw 'PDB path mismatch' }
+          $rich=-1
+          for($i=0;$i -le [Math]::Min($pe-8,$bytes.Length-8);$i++) { if($bytes[$i]-eq 0x52 -and $bytes[$i+1]-eq 0x69 -and $bytes[$i+2]-eq 0x63 -and $bytes[$i+3]-eq 0x68){$rich=$i;break} }
+          if($rich -lt 0){throw 'Rich header missing'}
+          $key=[BitConverter]::ToUInt32($bytes,$rich+4)
+          $found=$false
+          for($o=0x90;$o -lt $rich;$o+=8){$compid=[BitConverter]::ToUInt32($bytes,$o)-bxor $key;$build=$compid-band 0xFFFF;if($build-eq 27051){$found=$true}}
+          if(!$found){throw 'Rich header lacks 27051'}
+          $dst=Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231231_x86_msbuild15_27051.exe'
           Copy-Item $exe $dst
           Get-FileHash $dst -Algorithm SHA256
 
-      - name: Upload path-matched executable
+      - name: Upload MSBuild15 exact27051 executable
         uses: actions/upload-artifact@v4
         with:
-          name: pc8801ma-20231231-x86-27051-pathmatch
-          path: pc8801ma_20231231_x86_27051_pathmatch.exe
+          name: pc8801ma-20231231-x86-msbuild15-27051
+          path: pc8801ma_20231231_x86_msbuild15_27051.exe
           if-no-files-found: error
