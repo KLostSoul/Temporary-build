@@ -31,7 +31,9 @@ jobs:
           if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
           New-Item -ItemType Directory -Path $dst -Force | Out-Null
           robocopy $src $dst /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
-          if ($LASTEXITCODE -gt 7) { throw "robocopy failed: $LASTEXITCODE" }
+          $rc = $LASTEXITCODE
+          if ($rc -gt 7) { throw "robocopy failed: $rc" }
+          $global:LASTEXITCODE = 0
           $proj = Join-Path $dst 'vc++2017\pc8801ma.vcxproj'
           if (!(Test-Path $proj)) { throw "pc8801ma.vcxproj missing at original path: $proj" }
           "SOURCE_ROOT=$dst" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
