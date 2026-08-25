@@ -23,16 +23,19 @@ jobs:
           ref: b6183f5e93307c03ff77a5942dc62cd8cef18b0c
           path: cscp-20231231
 
-      - name: Install VS2019 Build Tools with v141 compatibility toolset
+      - name: Install VS2019 Build Tools C++ workload plus v141
         shell: powershell
         run: |
-          choco install visualstudio2019buildtools -y --package-parameters "--add Microsoft.VisualStudio.Component.VC.v141.x86.x64 --includeRecommended --locale en-US"
+          choco install visualstudio2019buildtools -y --package-parameters "--locale en-US"
           if ($LASTEXITCODE -notin 0,1641,3010) { throw "visualstudio2019buildtools failed: $LASTEXITCODE" }
+          choco install visualstudio2019-workload-vctools -y --package-parameters "--includeRecommended --add Microsoft.VisualStudio.Component.VC.v141.x86.x64"
+          if ($LASTEXITCODE -notin 0,1641,3010) { throw "visualstudio2019-workload-vctools failed: $LASTEXITCODE" }
           $vs = 'C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools'
-          if (!(Test-Path "$vs\VC\Auxiliary\Build\vcvars32.bat")) { throw 'VS2019 Build Tools vcvars32.bat not found' }
+          if (!(Test-Path "$vs\VC\Auxiliary\Build\vcvars32.bat")) { throw 'VS2019 C++ workload missing' }
+          Write-Host 'Installed MSVC directories:'
+          Get-ChildItem "$vs\VC\Tools\MSVC" -Directory | ForEach-Object { Write-Host $_.FullName }
           $tool = Get-ChildItem "$vs\VC\Tools\MSVC" -Directory | Where-Object { $_.Name -like '14.16*' } | Sort-Object Name | Select-Object -First 1
           if (!$tool) { throw 'VS2019 v141 14.16 toolset not installed' }
-          Write-Host "V141DIR=$($tool.FullName)"
           "V141DIR=$($tool.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Require compiler and linker 27051 exactly
@@ -40,17 +43,13 @@ jobs:
         run: |
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
           echo === CL ===
+          cl 2>&1
           cl 2>&1 | findstr /C:"19.16.27051"
-          if errorlevel 1 (
-            cl 2>&1
-            exit /b 51
-          )
+          if errorlevel 1 exit /b 51
           echo === LINK ===
+          link 2>&1
           link 2>&1 | findstr /C:"14.16.27051"
-          if errorlevel 1 (
-            link 2>&1
-            exit /b 52
-          )
+          if errorlevel 1 exit /b 52
 
       - name: Install Windows 8.1 SDK
         shell: powershell
