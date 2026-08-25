@@ -1,4 +1,4 @@
-name: Build CSCP 2023-12-31 ePC-8801MA x86 exact VS2017
+name: Build CSCP 2023-12-31 ePC-8801MA x86 VS2017 15.9.11
 
 on:
   push:
@@ -23,12 +23,12 @@ jobs:
           ref: b6183f5e93307c03ff77a5942dc62cd8cef18b0c
           path: cscp-20231231
 
-      - name: Install Visual Studio 2017 Build Tools 15.9
+      - name: Install Visual Studio 2017 Build Tools 15.9.11
         shell: powershell
         run: |
-          choco install visualstudio2017buildtools --version=15.9.58.0 -y --package-parameters "--locale en-US"
+          choco install visualstudio2017buildtools --version=15.9.11.0 -y --package-parameters "--locale en-US"
           if ($LASTEXITCODE -notin 0,1641,3010) { throw "visualstudio2017buildtools failed: $LASTEXITCODE" }
-          choco install visualstudio2017-workload-vctools --version=1.3.3 -y --package-parameters "--includeRecommended"
+          choco install visualstudio2017-workload-vctools --version=1.3.2 -y --package-parameters "--includeRecommended"
           if ($LASTEXITCODE -notin 0,1641,3010) { throw "visualstudio2017-workload-vctools failed: $LASTEXITCODE" }
           $vs = 'C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools'
           if (!(Test-Path "$vs\VC\Auxiliary\Build\vcvars32.bat")) { throw 'VS2017 Build Tools vcvars32.bat not found' }
@@ -49,9 +49,8 @@ jobs:
           }
           $winh = 'C:\Program Files (x86)\Windows Kits\8.1\Include\um\Windows.h'
           if (!(Test-Path $winh)) { throw 'Windows 8.1 SDK headers not found' }
-          Write-Host "Windows 8.1 SDK installed: $winh"
 
-      - name: Verify source project and VS2017 compiler
+      - name: Verify source project
         shell: powershell
         run: |
           $proj = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'cscp-20231231') -Recurse -Filter 'pc8801ma.vcxproj' | Select-Object -First 1
@@ -60,19 +59,18 @@ jobs:
           if ($text -notmatch '<PlatformToolset>v141</PlatformToolset>') { throw 'Source project does not request v141' }
           if ($text -notmatch '<WindowsTargetPlatformVersion>8\.1</WindowsTargetPlatformVersion>') { throw 'Source project does not request Windows SDK 8.1' }
           "PC8801MA_PROJ=$($proj.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Project: $($proj.FullName)"
 
-      - name: Build original Release Win32 with VS2017 MSBuild
+      - name: Build original Release Win32 with VS2017 15.9.11
         shell: cmd
         run: |
           call "C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools\VC\Auxiliary\Build\vcvars32.bat"
           where cl
-          cl 2>&1 | findstr /C:"19.16"
-          if errorlevel 1 exit /b 31
+          cl 2>&1
           where link
+          link 2>&1
           "C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools\MSBuild\15.0\Bin\MSBuild.exe" "%PC8801MA_PROJ%" /m /t:Clean;Rebuild /p:Configuration=Release /p:Platform=Win32 /v:minimal
 
-      - name: Verify PE32 i386 linker and Rich-header tool build
+      - name: Verify PE32 i386 and Rich build 27051
         shell: powershell
         run: |
           $root = Join-Path $env:GITHUB_WORKSPACE 'cscp-20231231'
@@ -84,17 +82,34 @@ jobs:
           $magic = [BitConverter]::ToUInt16($bytes, $pe + 24)
           $majorLinker = $bytes[$pe + 26]
           $minorLinker = $bytes[$pe + 27]
-          Write-Host ("Machine=0x{0:X4} PE=0x{1:X4} Linker={2}.{3} Size={4}" -f $machine,$magic,$majorLinker,$minorLinker,$bytes.Length)
           if ($machine -ne 0x014c) { throw 'Not Intel i386' }
           if ($magic -ne 0x010b) { throw 'Not PE32' }
           if ($majorLinker -ne 14 -or $minorLinker -ne 16) { throw "Unexpected linker version $majorLinker.$minorLinker" }
-          $dst = Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231231_vs2017_sdk81_x86.exe'
+
+          $rich = -1
+          for ($i=0; $i -le $bytes.Length-4; $i++) {
+            if ($bytes[$i] -eq 0x52 -and $bytes[$i+1] -eq 0x69 -and $bytes[$i+2] -eq 0x63 -and $bytes[$i+3] -eq 0x68) { $rich=$i; break }
+          }
+          if ($rich -lt 0) { throw 'Rich header not found' }
+          $key = [BitConverter]::ToUInt32($bytes, $rich+4)
+          $found27051 = $false
+          for ($o=128+16; $o -lt $rich; $o+=8) {
+            $compid = [BitConverter]::ToUInt32($bytes,$o) -bxor $key
+            $build = $compid -band 0xFFFF
+            $prod = ($compid -shr 16) -band 0xFFFF
+            $cnt = [BitConverter]::ToUInt32($bytes,$o+4) -bxor $key
+            Write-Host "Rich prod=$prod build=$build count=$cnt"
+            if ($build -eq 27051) { $found27051 = $true }
+          }
+          if (!$found27051) { throw 'Rich header does not contain build 27051' }
+          Write-Host ("Machine=0x{0:X4} PE=0x{1:X4} Linker={2}.{3} Size={4}" -f $machine,$magic,$majorLinker,$minorLinker,$bytes.Length)
+          $dst = Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231231_vs2017_15.9.11_sdk81_x86.exe'
           Copy-Item $exe.FullName $dst
           Get-FileHash $dst -Algorithm SHA256
 
-      - name: Upload exact VS2017 x86 executable
+      - name: Upload exact 15.9.11 x86 executable
         uses: actions/upload-artifact@v4
         with:
-          name: pc8801ma-20231231-vs2017-sdk81-x86
-          path: pc8801ma_20231231_vs2017_sdk81_x86.exe
+          name: pc8801ma-20231231-vs2017-15.9.11-sdk81-x86
+          path: pc8801ma_20231231_vs2017_15.9.11_sdk81_x86.exe
           if-no-files-found: error
