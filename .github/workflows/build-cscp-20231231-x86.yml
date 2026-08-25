@@ -48,36 +48,53 @@ jobs:
           if ($hash -ne '137B8591F2C772D0FE53225015EAB5F2E75D0D51CF9C384A0AB5162E2AECAF59') { throw "bootstrapper hash mismatch: $hash" }
           "VS1558_BOOTSTRAPPER=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Recover VS2017 release channel as of 2023-12-31
+      - name: Recover final VS2017 release channel snapshot before 2024
         shell: powershell
         run: |
           $target = 'https://aka.ms/vs/15/release/channel'
-          $cdxUrl = 'https://web.archive.org/cdx/search/cdx?url=' + [uri]::EscapeDataString($target) + '&from=2023&to=2023&output=json&fl=timestamp,original,statuscode,mimetype,digest&filter=statuscode:200&collapse=digest'
+          $cdxUrl = 'https://web.archive.org/cdx/search/cdx?url=' + [uri]::EscapeDataString($target) + '&from=2023&to=2023&output=json&fl=timestamp,original,statuscode,mimetype,digest'
           Write-Host "CDX=$cdxUrl"
-          $rows = Invoke-RestMethod -Uri $cdxUrl -TimeoutSec 60
-          if (!$rows -or $rows.Count -lt 2) {
-            $cdxUrl = 'https://web.archive.org/cdx/search/cdx?url=' + [uri]::EscapeDataString($target) + '&from=2023&to=2023&output=json&fl=timestamp,original,statuscode,mimetype,digest&collapse=digest'
-            $rows = Invoke-RestMethod -Uri $cdxUrl -TimeoutSec 60
-          }
+          $rows = Invoke-RestMethod -Uri $cdxUrl -TimeoutSec 120
           if (!$rows -or $rows.Count -lt 2) { throw 'No 2023 Wayback snapshots found for VS2017 release channel' }
           $data = @($rows | Select-Object -Skip 1)
-          $chosen = $data | Where-Object { $_[0] -le '20231231235959' } | Sort-Object { $_[0] } -Descending | Select-Object -First 1
-          if (!$chosen) { throw 'No Wayback snapshot at or before 2023-12-31' }
-          $ts = [string]$chosen[0]
-          Write-Host "WAYBACK_TIMESTAMP=$ts STATUS=$($chosen[2]) MIME=$($chosen[3])"
-          $replay = "https://web.archive.org/web/${ts}id_/$target"
+          Write-Host 'Latest archived records:'
+          $data | Where-Object { $_[0] -le '20231231235959' } | Sort-Object { $_[0] } -Descending | Select-Object -First 15 | ForEach-Object {
+            Write-Host ("  {0} status={1} mime={2} digest={3}" -f $_[0],$_[2],$_[3],$_[4])
+          }
+          $candidates = $data | Where-Object { $_[0] -le '20231231235959' } | Sort-Object { $_[0] } -Descending
+          if (!$candidates) { throw 'No snapshot at or before 2023-12-31' }
+
           $channel = Join-Path $env:RUNNER_TEMP 'VS2017_20231231_ChannelManifest.json'
-          Invoke-WebRequest -Uri $replay -OutFile $channel -MaximumRedirection 20 -TimeoutSec 120
-          $raw = Get-Content $channel -Raw
-          Write-Host ($raw.Substring(0,[Math]::Min(1000,$raw.Length)))
-          if ($raw -notmatch 'VisualStudio\.15\.Release' -and $raw -notmatch '15\.9\.') { throw 'Recovered file does not look like a VS2017 release channel manifest' }
-          try { $null = $raw | ConvertFrom-Json } catch { throw "Recovered channel manifest is not JSON: $_" }
+          $selected = $null
+          foreach ($row in $candidates) {
+            $ts = [string]$row[0]
+            $replay = "https://web.archive.org/web/${ts}id_/$target"
+            try {
+              Invoke-WebRequest -Uri $replay -OutFile $channel -MaximumRedirection 20 -TimeoutSec 120
+              $raw = Get-Content $channel -Raw
+              $obj = $raw | ConvertFrom-Json
+              if ($obj.info.manifestName -eq 'VisualStudio.15.Release') {
+                Write-Host "Candidate $ts -> $($obj.info.productDisplayVersion) build=$($obj.info.buildVersion)"
+                if ($obj.info.productDisplayVersion -eq '15.9.58') {
+                  $selected = @{ Timestamp=$ts; Raw=$raw; Obj=$obj }
+                  break
+                }
+              }
+            } catch {
+              Write-Host "Candidate $ts failed: $($_.Exception.Message)"
+            }
+          }
+          if (!$selected) { throw 'Could not recover a 15.9.58 VS2017 channel snapshot before 2024' }
+          Set-Content -Path $channel -Value $selected.Raw -Encoding UTF8 -NoNewline
           $fileUri = ([System.Uri]$channel).AbsoluteUri
+          Write-Host "SELECTED_WAYBACK_TIMESTAMP=$($selected.Timestamp)"
+          Write-Host "SELECTED_VERSION=$($selected.Obj.info.productDisplayVersion)"
+          Write-Host "SELECTED_BUILD=$($selected.Obj.info.buildVersion)"
           "HIST_CHANNEL=$channel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "HIST_CHANNEL_URI=$fileUri" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "WAYBACK_TS=$ts" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "WAYBACK_TS=$($selected.Timestamp)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Install VS2017 Build Tools from historical channel
+      - name: Install VS2017 Build Tools from recovered 15.9.58 channel
         shell: powershell
         run: |
           $installPath = 'C:\VS2017_HIST'
@@ -91,14 +108,13 @@ jobs:
             '--includeRecommended',
             '--quiet', '--wait', '--norestart', '--nocache'
           )
-          Write-Host "Installing with historical channel $env:WAYBACK_TS"
           $p = Start-Process -FilePath $env:VS1558_BOOTSTRAPPER -ArgumentList $args -Wait -PassThru
           if ($p.ExitCode -notin 0,3010) { throw "historical VS2017 install failed: $($p.ExitCode)" }
           if (!(Test-Path "$installPath\MSBuild\15.0\Bin\MSBuild.exe")) { throw 'MSBuild 15 missing' }
           if (!(Test-Path "$installPath\VC\Auxiliary\Build\vcvars32.bat")) { throw 'VC environment missing' }
           "VS_HIST=$installPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Report historical VS2017 product compiler linker and MSBuild versions
+      - name: Require exact VS2017 15.9.58 product
         shell: powershell
         run: |
           $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
@@ -106,9 +122,9 @@ jobs:
           if (!$json) { throw 'historical VS2017 installation not found by vswhere' }
           $ver = $json[0].installationVersion
           Write-Host "VS_INSTALLATION_VERSION=$ver"
-          "VS_PRODUCT_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($ver -ne '15.9.34118.181') { throw "unexpected VS2017 product build: $ver" }
 
-      - name: Require 2023-era compiler linker and MSBuild
+      - name: Require exact compiler linker and report MSBuild
         shell: cmd
         run: |
           call "%VS_HIST%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
@@ -143,14 +159,14 @@ jobs:
           if ($text -notmatch '<PlatformToolset>v141</PlatformToolset>') { throw 'project is not v141' }
           if ($text -notmatch '<WindowsTargetPlatformVersion>8\.1</WindowsTargetPlatformVersion>') { throw 'project is not SDK 8.1' }
 
-      - name: Build with historical VS2017 environment
+      - name: Build with exact historical VS2017 environment
         shell: cmd
         working-directory: D:\Develop\common\history\source\vc++2017
         run: |
           call "%VS_HIST%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
           "%VS_HIST%\MSBuild\15.0\Bin\MSBuild.exe" pc8801ma.vcxproj /t:clean;rebuild /p:Configuration=Release;Platform="Win32" /v:minimal
 
-      - name: Verify historical output against known working shape
+      - name: Verify exact historical output
         shell: powershell
         run: |
           $exe = 'D:\Develop\common\history\source\vc++2017\bin\x86\Release\pc8801ma.exe'
@@ -169,13 +185,13 @@ jobs:
           $ascii=[Text.Encoding]::ASCII.GetString($bytes)
           $pdb='D:\Develop\common\history\source\vc++2017\bin\x86\Release\pc8801ma.pdb'
           if (!$ascii.Contains($pdb)) { throw 'PDB path mismatch' }
-          $dst=Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231231_x86_historical_vs2017.exe'
+          $dst=Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231231_x86_exact_2023env.exe'
           Copy-Item $exe $dst
           Get-FileHash $dst -Algorithm SHA256
 
-      - name: Upload historical-channel executable
+      - name: Upload exact historical executable
         uses: actions/upload-artifact@v4
         with:
-          name: pc8801ma-20231231-x86-historical-vs2017
-          path: pc8801ma_20231231_x86_historical_vs2017.exe
+          name: pc8801ma-20231231-x86-exact-2023env
+          path: pc8801ma_20231231_x86_exact_2023env.exe
           if-no-files-found: error
