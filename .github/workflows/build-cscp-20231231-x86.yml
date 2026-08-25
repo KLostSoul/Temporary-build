@@ -16,20 +16,12 @@ jobs:
       - name: Checkout build host
         uses: actions/checkout@v4
 
-      - name: Download official CSCP 2023-12-31 source archive
-        shell: powershell
-        run: |
-          $url = 'https://takeda-toshiya.my.coocan.jp/common/history/2023-12-31.7z'
-          $out = Join-Path $env:GITHUB_WORKSPACE '2023-12-31.7z'
-          Invoke-WebRequest -Uri $url -OutFile $out
-          if (!(Test-Path $out)) { throw 'Source archive download failed' }
-          Get-FileHash $out -Algorithm SHA256
-
-      - name: Extract source archive
-        shell: cmd
-        run: |
-          mkdir "%GITHUB_WORKSPACE%\cscp-20231231"
-          7z x "%GITHUB_WORKSPACE%\2023-12-31.7z" -o"%GITHUB_WORKSPACE%\cscp-20231231" -y
+      - name: Checkout CSCP source imported from official 2023-12-31.7z
+        uses: actions/checkout@v4
+        with:
+          repository: roytam1/CommonSourceCodeProject
+          ref: b6183f5e93307c03ff77a5942dc62cd8cef18b0c
+          path: cscp-20231231
 
       - name: Locate PC-8801MA project
         shell: powershell
