@@ -1,4 +1,4 @@
-name: Build and verify CSCP 2023-12-16 ePC-8801MA x86
+name: Find matching historical ePC-8801MA x86 build
 
 on:
   push:
@@ -10,42 +10,18 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  find-match:
     runs-on: windows-2022
     steps:
       - name: Checkout build host
         uses: actions/checkout@v4
 
-      - name: Checkout exact CSCP 2023-12-16 source
+      - name: Checkout full CSCP history
         uses: actions/checkout@v4
         with:
           repository: roytam1/CommonSourceCodeProject
-          ref: 62b2648030273c436b265a74bba64f93903f05ef
-          path: cscp-20231216
-
-      - name: Verify source identity
-        shell: powershell
-        run: |
-          Set-Location (Join-Path $env:GITHUB_WORKSPACE 'cscp-20231216')
-          $sha = (git rev-parse HEAD).Trim()
-          $subject = (git log -1 --format=%s).Trim()
-          Write-Host "SOURCE_SHA=$sha"
-          Write-Host "SOURCE_SUBJECT=$subject"
-          if ($sha -ne '62b2648030273c436b265a74bba64f93903f05ef') { throw "wrong source commit: $sha" }
-          if ($subject -ne 'import 2023-12-16.7z') { throw "wrong source snapshot: $subject" }
-
-      - name: Recreate original build path
-        shell: powershell
-        run: |
-          $src = Join-Path $env:GITHUB_WORKSPACE 'cscp-20231216'
-          $dst = 'D:\Develop\common\history\source'
-          if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
-          New-Item -ItemType Directory -Path $dst -Force | Out-Null
-          robocopy $src $dst /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
-          $rc=$LASTEXITCODE
-          if($rc -gt 7){throw "robocopy failed $rc"}
-          $global:LASTEXITCODE=0
-          if(!(Test-Path "$dst\vc++2017\pc8801ma.vcxproj")){throw 'pc8801ma.vcxproj missing'}
+          fetch-depth: 0
+          path: cscp-history
 
       - name: Install fixed VS2022 17.8.3 with exact v141 27051
         shell: powershell
@@ -63,10 +39,8 @@ jobs:
         shell: cmd
         run: |
           call "%VS1783%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
-          cl 2>&1
           cl 2>&1 | findstr /C:"19.16.27051"
           if errorlevel 1 exit /b 51
-          link 2>&1
           link 2>&1 | findstr /C:"14.16.27051"
           if errorlevel 1 exit /b 52
 
@@ -79,108 +53,128 @@ jobs:
           if($p.ExitCode -notin 0,3010){throw "SDK 8.1 install failed $($p.ExitCode)"}
           if(!(Test-Path 'C:\Program Files (x86)\Windows Kits\8.1\Include\um\Windows.h')){throw 'Windows 8.1 SDK headers missing'}
 
-      - name: Verify original project settings
+      - name: Build historical snapshots and compare with known-good executable
         shell: powershell
         run: |
-          $proj='D:\Develop\common\history\source\vc++2017\pc8801ma.vcxproj'
-          $text=Get-Content $proj -Raw
-          if($text -notmatch '<PlatformToolset>v141</PlatformToolset>'){throw 'project is not v141'}
-          if($text -notmatch '<WindowsTargetPlatformVersion>8\.1</WindowsTargetPlatformVersion>'){throw 'project is not SDK 8.1'}
-          if($text -notmatch "'\$\(Configuration\)\|\$\(Platform\)'=='Release\|Win32'"){throw 'Release|Win32 configuration missing'}
+          $ErrorActionPreference='Stop'
+          $repo=Join-Path $env:GITHUB_WORKSPACE 'cscp-history'
+          $work='D:\Develop\common\history\source'
+          $out=Join-Path $env:GITHUB_WORKSPACE 'historical-builds'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
 
-      - name: Build Release Win32
-        shell: cmd
-        working-directory: D:\Develop\common\history\source\vc++2017
-        run: |
-          call "%VS1783%\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16
-          "%VS1783%\MSBuild\Current\Bin\MSBuild.exe" pc8801ma.vcxproj /t:clean;rebuild /p:Configuration=Release;Platform="Win32" /p:VCToolsVersion=14.16.27023 /v:minimal
-
-      - name: Analyze and stage 2023-12-16 build
-        shell: powershell
-        run: |
-          $exe='D:\Develop\common\history\source\vc++2017\bin\x86\Release\pc8801ma.exe'
-          if(!(Test-Path $exe)){throw 'output missing'}
-          $b=[IO.File]::ReadAllBytes($exe)
-          $pe=[BitConverter]::ToInt32($b,0x3c)
-          $machine=[BitConverter]::ToUInt16($b,$pe+4)
-          $num=[BitConverter]::ToUInt16($b,$pe+6)
-          $optsz=[BitConverter]::ToUInt16($b,$pe+20)
-          $magic=[BitConverter]::ToUInt16($b,$pe+24)
-          $linkMajor=$b[$pe+26]
-          $linkMinor=$b[$pe+27]
-          $entry=[BitConverter]::ToUInt32($b,$pe+40)
-          $sec=$pe+24+$optsz
-          $textRaw=0;$textSize=0;$textVS=0
-          for($i=0;$i -lt $num;$i++){
-            $o=$sec+$i*40
-            $name=[Text.Encoding]::ASCII.GetString($b,$o,8).Trim([char]0)
-            if($name -eq '.text'){
-              $textVS=[BitConverter]::ToUInt32($b,$o+8)
-              $textSize=[BitConverter]::ToUInt32($b,$o+16)
-              $textRaw=[BitConverter]::ToUInt32($b,$o+20)
-            }
-          }
-          if($machine -ne 0x014c){throw 'output is not Intel i386'}
-          if($magic -ne 0x010b){throw 'output is not PE32'}
-          if($linkMajor -ne 14 -or $linkMinor -ne 16){throw "unexpected PE linker header $linkMajor.$linkMinor"}
-          $sha=[Security.Cryptography.SHA256]::Create()
-          $textHash=([BitConverter]::ToString($sha.ComputeHash($b,$textRaw,$textSize))).Replace('-','')
-          $fileHash=(Get-FileHash $exe -Algorithm SHA256).Hash
+          $candidates=@(
+            @{date='2023-06-11';sha='d4e3e58e0f8ddc8c3077d24e88b735bd26dc2f4a'},
+            @{date='2023-06-07';sha='7cb006a94eab9065443ab6e2076a64e9a9dec60a'},
+            @{date='2023-06-04';sha='4f9e5ab1c306e405fc74496be2bc5a4440e3fcfa'},
+            @{date='2023-05-30';sha='7ef3a8cbe18370e02be8ac1c0baf935bc574c515'},
+            @{date='2023-05-29';sha='14a6adc82adfdb20bddd85eee0959c35d94f28af'},
+            @{date='2023-01-28';sha='9d75d485f3cba17fd7ddf496f94088b0acaadddf'},
+            @{date='2023-01-24';sha='91ad730be1de9ad03679c2f6ccfbd9dc813404ad'},
+            @{date='2023-01-22';sha='b8fc06c9315f0b9b5f4f4aea6b1edad11cb12b3d'}
+          )
 
           $knownFile='0C248F561ADAD47171005998FE90EE931783A6129C7E3AE5762BC6C40BF366AB'
           $knownText='180A2FECA9FA1E0469194ABB84895100B5F0D242BA239FFD7C94D127C0679667'
           $knownSize=1030144
           $knownEntry=0x73DB5
           $knownTextVS=811392
+          $rows=@()
+          $matchFound=$false
 
-          $fileMatch=($fileHash -eq $knownFile)
-          $textMatch=($textHash -eq $knownText)
-          $sizeMatch=($b.Length -eq $knownSize)
-          $entryMatch=($entry -eq $knownEntry)
-          $textVSMatch=($textVS -eq $knownTextVS)
-          $allMatch=$fileMatch -and $textMatch -and $sizeMatch -and $entryMatch -and $textVSMatch
+          foreach($c in $candidates) {
+            Write-Host "========== BUILD $($c.date) $($c.sha) =========="
+            Set-Location $repo
+            git reset --hard | Out-Host
+            git clean -fdx | Out-Host
+            git checkout --force $c.sha | Out-Host
+            $subject=(git log -1 --format=%s).Trim()
+            if($subject -ne "import $($c.date).7z"){throw "snapshot identity mismatch: $subject"}
 
-          $lines=@(
-            'SOURCE=2023-12-16.7z',
-            'SOURCE_SHA=62b2648030273c436b265a74bba64f93903f05ef',
-            'TARGET=Release|Win32',
-            'COMPILER=19.16.27051',
-            'LINKER=14.16.27051',
-            'SDK=Windows 8.1',
-            ('MACHINE=0x{0:X4}' -f $machine),
-            ('PE_MAGIC=0x{0:X4}' -f $magic),
-            ("PE_LINKER_HEADER=$linkMajor.$linkMinor"),
-            ("SIZE=$($b.Length)"),
-            ('ENTRY_RVA=0x{0:X}' -f $entry),
-            ("TEXT_VIRTUAL_SIZE=$textVS"),
-            ("TEXT_RAW_SIZE=$textSize"),
-            ("TEXT_SHA256=$textHash"),
-            ("FILE_SHA256=$fileHash"),
-            ("KNOWN_GOOD_SIZE_MATCH=$sizeMatch"),
-            ("KNOWN_GOOD_ENTRY_MATCH=$entryMatch"),
-            ("KNOWN_GOOD_TEXT_VSIZE_MATCH=$textVSMatch"),
-            ("KNOWN_GOOD_TEXT_SHA256_MATCH=$textMatch"),
-            ("KNOWN_GOOD_FILE_SHA256_MATCH=$fileMatch"),
-            ("KNOWN_GOOD_ALL_MATCH=$allMatch")
-          )
-          $report=Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231216_x86_validation.txt'
-          $lines | Tee-Object -FilePath $report
-          Copy-Item $exe (Join-Path $env:GITHUB_WORKSPACE 'pc8801ma_20231216_x86.exe')
-          "VALIDATION_ALL_MATCH=$($allMatch.ToString().ToLower())" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            if(Test-Path $work){Remove-Item $work -Recurse -Force}
+            New-Item -ItemType Directory -Path $work -Force | Out-Null
+            robocopy $repo $work /E /COPY:DAT /XD .git /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Host
+            $rc=$LASTEXITCODE
+            if($rc -gt 7){throw "robocopy failed $rc"}
+            $global:LASTEXITCODE=0
 
-      - name: Upload 2023-12-16 executable and validation report
+            $proj=Join-Path $work 'vc++2017\pc8801ma.vcxproj'
+            if(!(Test-Path $proj)){
+              $rows += [pscustomobject]@{Date=$c.date;SHA=$c.sha;Build='NO_PROJECT';Size='';Entry='';TextVS='';TextSHA256='';FileSHA256='';SizeMatch=$false;EntryMatch=$false;TextVSMatch=$false;TextMatch=$false;FileMatch=$false;AllMatch=$false}
+              continue
+            }
+
+            $cmd='call "'+$env:VS1783+'\VC\Auxiliary\Build\vcvars32.bat" -vcvars_ver=14.16 && "'+$env:VS1783+'\MSBuild\Current\Bin\MSBuild.exe" "'+$proj+'" /t:clean;rebuild /p:Configuration=Release;Platform="Win32" /p:VCToolsVersion=14.16.27023 /v:minimal'
+            cmd.exe /D /S /C $cmd
+            if($LASTEXITCODE -ne 0){
+              $rows += [pscustomobject]@{Date=$c.date;SHA=$c.sha;Build='FAILED';Size='';Entry='';TextVS='';TextSHA256='';FileSHA256='';SizeMatch=$false;EntryMatch=$false;TextVSMatch=$false;TextMatch=$false;FileMatch=$false;AllMatch=$false}
+              continue
+            }
+
+            $exe=Join-Path $work 'vc++2017\bin\x86\Release\pc8801ma.exe'
+            if(!(Test-Path $exe)){throw "output missing for $($c.date)"}
+            $b=[IO.File]::ReadAllBytes($exe)
+            $pe=[BitConverter]::ToInt32($b,0x3c)
+            $machine=[BitConverter]::ToUInt16($b,$pe+4)
+            $num=[BitConverter]::ToUInt16($b,$pe+6)
+            $optsz=[BitConverter]::ToUInt16($b,$pe+20)
+            $magic=[BitConverter]::ToUInt16($b,$pe+24)
+            $entry=[BitConverter]::ToUInt32($b,$pe+40)
+            $sec=$pe+24+$optsz
+            $textRaw=0;$textSize=0;$textVS=0
+            for($i=0;$i -lt $num;$i++){
+              $o=$sec+$i*40
+              $name=[Text.Encoding]::ASCII.GetString($b,$o,8).Trim([char]0)
+              if($name -eq '.text'){
+                $textVS=[BitConverter]::ToUInt32($b,$o+8)
+                $textSize=[BitConverter]::ToUInt32($b,$o+16)
+                $textRaw=[BitConverter]::ToUInt32($b,$o+20)
+              }
+            }
+            if($machine -ne 0x014c -or $magic -ne 0x010b){throw "wrong PE architecture for $($c.date)"}
+            $sha256=[Security.Cryptography.SHA256]::Create()
+            $textHash=([BitConverter]::ToString($sha256.ComputeHash($b,$textRaw,$textSize))).Replace('-','')
+            $fileHash=(Get-FileHash $exe -Algorithm SHA256).Hash
+            $sizeMatch=($b.Length -eq $knownSize)
+            $entryMatch=($entry -eq $knownEntry)
+            $textVSMatch=($textVS -eq $knownTextVS)
+            $textMatch=($textHash -eq $knownText)
+            $fileMatch=($fileHash -eq $knownFile)
+            $allMatch=$sizeMatch -and $entryMatch -and $textVSMatch -and $textMatch
+
+            $dst=Join-Path $out ("pc8801ma_{0}_x86.exe" -f ($c.date -replace '-',''))
+            Copy-Item $exe $dst -Force
+            $rows += [pscustomobject]@{Date=$c.date;SHA=$c.sha;Build='OK';Size=$b.Length;Entry=('0x{0:X}' -f $entry);TextVS=$textVS;TextSHA256=$textHash;FileSHA256=$fileHash;SizeMatch=$sizeMatch;EntryMatch=$entryMatch;TextVSMatch=$textVSMatch;TextMatch=$textMatch;FileMatch=$fileMatch;AllMatch=$allMatch}
+            Write-Host ("{0}: SIZE={1} ENTRY=0x{2:X} TEXTVS={3} TEXT={4} MATCH={5}" -f $c.date,$b.Length,$entry,$textVS,$textHash,$allMatch)
+
+            if($allMatch -and !$matchFound){
+              Copy-Item $exe (Join-Path $out ("MATCH_pc8801ma_{0}_x86.exe" -f ($c.date -replace '-',''))) -Force
+              $matchFound=$true
+              "MATCH_DATE=$($c.date)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+              "MATCH_SHA=$($c.sha)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+
+          $csv=Join-Path $out 'comparison.csv'
+          $rows | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8
+          $rows | Format-Table -AutoSize | Out-Host
+          if(!$matchFound){
+            'MATCH_FOUND=false' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            'MATCH_FOUND=true' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Upload all historical builds and comparison report
         uses: actions/upload-artifact@v4
         with:
-          name: pc8801ma-20231216-x86-verified
-          path: |
-            pc8801ma_20231216_x86.exe
-            pc8801ma_20231216_x86_validation.txt
+          name: pc8801ma-2023-history-comparison
+          path: historical-builds
           if-no-files-found: error
 
-      - name: Final known-good comparison gate
+      - name: Report match status
         shell: powershell
         run: |
-          if($env:VALIDATION_ALL_MATCH -ne 'true') {
-            throw '2023-12-16 build completed, but it does not exactly match the known-good executable. See validation artifact.'
+          if($env:MATCH_FOUND -eq 'true') {
+            Write-Host "MATCH FOUND: $env:MATCH_DATE $env:MATCH_SHA"
+          } else {
+            Write-Host 'No exact .text/entry/size match among tested 2023 snapshots.'
           }
-          Write-Host '2023-12-16 build exactly matches known-good executable.'
