@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   windows-x64:
-    name: Windows x64 v0.6.0 DLL and two install ZIP layouts
+    name: Windows x64 v0.6.1 DLL and two install ZIP layouts
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
@@ -59,20 +59,20 @@ jobs:
       - name: Upload installable OBS plugin
         uses: actions/upload-artifact@v4
         with:
-          name: BongoCat_OBS33_2.4.1_v0.6.0_Windows_x64
+          name: BongoCat_OBS33_2.4.1_v0.6.1_Windows_x64
           path: plugin/dist/BongoCat_OBS33_Live2D_Windows_x64.zip
           if-no-files-found: error
       - name: Upload OBS Program Files legacy plugin install ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: BongoCat_OBS33_v0.6.0_ProgramFiles_x64
+          name: BongoCat_OBS33_v0.6.1_ProgramFiles_x64
           path: plugin/dist/BongoCat_OBS33_Live2D_ProgramFiles_x64.zip
           if-no-files-found: error
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: BongoCat_OBS33_v0.6.0_diagnostics
+          name: BongoCat_OBS33_v0.6.1_diagnostics
           path: |
             bongocat-build-log.txt
             plugin/build/CMakeFiles/CMakeConfigureLog.yaml
