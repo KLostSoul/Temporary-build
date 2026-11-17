@@ -1,4 +1,4 @@
-name: Audit BongoCat OBS 33 DLL runtime load
+name: Audit BongoCat OBS 33 v0.4.0 DLL runtime and model switch
 
 on:
   push:
@@ -17,8 +17,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: BongoCat_OBS33_2.4.1_Windows_x64
-          run-id: 44011658176
+          name: BongoCat_OBS33_2.4.1_Windows_x64_v0.4.0
+          run-id: 44014402669
           repository: KLostSoul/Temporary-build
           github-token: ${{ github.token }}
           path: release
@@ -89,6 +89,11 @@ jobs:
             [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern IntPtr obs_source_create(string id, string name, IntPtr settings, IntPtr hotkeys);
             [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern uint obs_source_get_width(IntPtr source);
             [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern uint obs_source_get_height(IntPtr source);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern IntPtr obs_data_create();
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern void obs_data_release(IntPtr settings);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)] public static extern void obs_data_set_string(IntPtr settings,string name,string value);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)] public static extern void obs_data_set_int(IntPtr settings,string name,long value);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern void obs_source_update(IntPtr source,IntPtr settings);
             [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern void obs_source_release(IntPtr source);
             [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern void obs_shutdown();
           }
@@ -115,4 +120,24 @@ jobs:
             [ObsHost]::obs_source_release($src)
             if($width -ne 640 -or $height -ne 384){throw "Incorrect defaults: $width x $height"}
             Write-Host "OBS_SOURCE_CREATE_SUCCESS dims=$width x $height"
+            foreach ($preset in @('keyboard','gamepad')) {
+              $settings=[ObsHost]::obs_data_create()
+              if($settings -eq [IntPtr]::Zero){throw "obs_data_create failed for $preset"}
+              try {
+                [ObsHost]::obs_data_set_string($settings,'preset',$preset)
+                $other=[ObsHost]::obs_source_create('bongocat_obs_live2d',"audit-$preset",$settings,[IntPtr]::Zero)
+                if($other -eq [IntPtr]::Zero){throw "obs_source_create failed for $preset"}
+                try {
+                  $w=[ObsHost]::obs_source_get_width($other)
+                  $h=[ObsHost]::obs_source_get_height($other)
+                  if($w -ne 640 -or $h -ne 384){throw "Unexpected $preset size $w x $h"}
+                  [ObsHost]::obs_data_set_string($settings,'model_folder','Z:\\this_model_does_not_exist')
+                  [ObsHost]::obs_data_set_int($settings,'width',768)
+                  [ObsHost]::obs_source_update($other,$settings)
+                  if([ObsHost]::obs_source_get_width($other) -ne 640){throw "Failed model change lost prior size for $preset"}
+                  Write-Host "MODEL_SWITCH_RETENTION=SUCCESS preset=$preset"
+                } finally { [ObsHost]::obs_source_release($other) }
+              } finally { [ObsHost]::obs_data_release($settings) }
+            }
+            Write-Host 'OBS_SOURCE_MODEL_MATRIX=SUCCESS'
           } finally { [ObsHost]::obs_shutdown() }
