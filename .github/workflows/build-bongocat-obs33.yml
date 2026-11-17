@@ -1,4 +1,4 @@
-name: Build BongoCat Live2D OBS 33 DLL v0.4.0
+name: Build BongoCat Live2D OBS 33 DLL
 
 on:
   push:
@@ -13,17 +13,21 @@ permissions:
 
 jobs:
   windows-x64:
-    name: Windows x64 DLL + release ZIP
+    name: Windows x64 v0.5.0 DLL and install ZIP
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Unpack pinned source payload
+      - name: Unpack exact submitted source
         shell: pwsh
         run: |
           python -c "import pathlib,base64,lzma,io,tarfile; d=base64.b64decode(pathlib.Path('bongocat_payload.xz.b64').read_text()); tarfile.open(fileobj=io.BytesIO(lzma.decompress(d)),mode='r:').extractall('plugin')"
           if (-not (Test-Path plugin/tools/build_windows.ps1)) { throw 'Payload failed to unpack' }
-      - name: Build and test with Windows MSVC
+          Write-Host 'SOURCE_PRESERVED: no build-time source patches'
+      - name: Verify source contract
+        shell: pwsh
+        run: python plugin/tests/check_source_contract.py
+      - name: Build, test and package with MSVC and Rust
         shell: pwsh
         run: |
           Start-Transcript -Path 'bongocat-build-log.txt' -Force
@@ -32,28 +36,28 @@ jobs:
           } finally {
             Stop-Transcript
           }
-      - name: Verify packaged DLL exists and inspect PE header
+      - name: Check actual Windows DLL and ZIP
         shell: pwsh
         run: |
           $dll = 'plugin/build/Release/bongocat-obs.dll'
-          if (-not (Test-Path $dll)) { throw 'DLL was not built' }
-          $data = [IO.File]::ReadAllBytes((Resolve-Path $dll))
-          if ($data[0] -ne 0x4d -or $data[1] -ne 0x5a) { throw 'Not a PE/DLL' }
-          $pe = [BitConverter]::ToInt32($data, 0x3c)
-          $machine = [BitConverter]::ToUInt16($data, $pe + 4)
-          if ($machine -ne 0x8664) { throw ('Expected x64, got 0x{0:x}' -f $machine) }
+          $zip = 'plugin/dist/BongoCat_OBS33_Live2D_Windows_x64.zip'
+          if (-not (Test-Path $dll) -or -not (Test-Path $zip)) { throw 'Required outputs missing' }
+          $data=[IO.File]::ReadAllBytes((Resolve-Path $dll))
+          if($data[0] -ne 0x4d -or $data[1] -ne 0x5a){throw 'Missing MZ signature'}
+          $pe=[BitConverter]::ToInt32($data,0x3c)
+          if([BitConverter]::ToUInt16($data,$pe+4) -ne 0x8664){throw 'DLL is not Windows x64'}
           Get-FileHash $dll -Algorithm SHA256 | Format-List
-      - name: Upload install ZIP
+      - name: Upload installable OBS plugin
         uses: actions/upload-artifact@v4
         with:
-          name: BongoCat_OBS33_2.4.1_Windows_x64_v0.4.0
+          name: BongoCat_OBS33_2.4.1_v0.5.0_Windows_x64
           path: plugin/dist/BongoCat_OBS33_Live2D_Windows_x64.zip
           if-no-files-found: error
-      - name: Upload build diagnostics
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: BongoCat_OBS33_build_diagnostics
+          name: BongoCat_OBS33_v0.5.0_diagnostics
           path: |
             bongocat-build-log.txt
             plugin/build/CMakeFiles/CMakeConfigureLog.yaml
