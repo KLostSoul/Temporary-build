@@ -1,0 +1,117 @@
+name: Audit OBS 33 actual ProgramData plugin discovery
+on:
+  push:
+    branches: [build/bongocat-obs33]
+    paths: ['.github/workflows/audit-bongocat-discovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  actual-discovery:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: BongoCat_OBS33_2.4.1_Windows_x64
+          run-id: 44019543468
+          repository: KLostSoul/Temporary-build
+          github-token: ${{ github.token }}
+          path: release
+      - name: Install ZIP to exact official ProgramData structure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Expand-Archive release/BongoCat_OBS33_Live2D_Windows_x64.zip -DestinationPath extracted
+          $root=Join-Path $env:ProgramData 'obs-studio/plugins'
+          New-Item -ItemType Directory -Force $root | Out-Null
+          Copy-Item extracted/bongocat-obs $root -Recurse -Force
+          $dll=Join-Path $root 'bongocat-obs/bongocat-obs.dll'
+          if(-not (Test-Path $dll)){throw "Incorrect plugin archive layout: $dll"}
+          if(-not (Test-Path (Join-Path $root 'bongocat-obs/data/locale/en-US.ini'))){throw "Missing locale"}
+          Write-Host "PLUGIN_INSTALLED=$dll"
+      - name: Download and expand exact OBS 33.0.1 official portable release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Invoke-WebRequest 'https://github.com/obsproject/obs-studio/releases/download/33.0.1/OBS-Studio-33.0.1-Windows-x64.zip' -OutFile "$env:RUNNER_TEMP/obs33.zip"
+          Expand-Archive "$env:RUNNER_TEMP/obs33.zip" -DestinationPath obs -Force
+      - name: Use real OBS 33.0.1 plugin loader enumeration and create input source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $obs=Get-ChildItem obs -Filter obs.dll -Recurse -File | Select-Object -First 1
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class ObsDiscovery {
+            [StructLayout(LayoutKind.Sequential)] public struct ModuleInfo {
+              public IntPtr binary, data;
+              public int type;
+              public IntPtr name;
+            }
+            [StructLayout(LayoutKind.Sequential)] public struct Failure {
+              public IntPtr failedModules;
+              public UIntPtr count;
+            }
+            [DllImport("kernel32.dll",EntryPoint="SetDllDirectoryW",CharSet=CharSet.Unicode)]
+            public static extern bool SetDllDirectory(string path);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            [return:MarshalAs(UnmanagedType.I1)]
+            public static extern bool obs_startup(string locale,IntPtr config,IntPtr store);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_load_plugins(ref ModuleInfo module,ref Failure fail);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_module_failure_info_free(ref Failure fail);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            public static extern IntPtr obs_get_module(string name);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            [return:MarshalAs(UnmanagedType.I1)]
+            public static extern bool obs_enum_input_types(UIntPtr index,out IntPtr id);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            public static extern IntPtr obs_source_create(string id,string name,IntPtr settings,IntPtr hotkeys);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_source_release(IntPtr src);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern uint obs_source_get_width(IntPtr src);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern uint obs_source_get_height(IntPtr src);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_shutdown();
+          }
+          '@
+          if(-not [ObsDiscovery]::SetDllDirectory($obs.DirectoryName)){throw 'SetDllDirectory failed'}
+          if(-not [ObsDiscovery]::obs_startup('en-US',[IntPtr]::Zero,[IntPtr]::Zero)){throw 'obs_startup failed'}
+          $root=Join-Path $env:ProgramData 'obs-studio/plugins'
+          $bin=Join-Path $root '%module%'
+          $data=Join-Path $root '%module%/data'
+          $info=[ObsDiscovery+ModuleInfo]::new()
+          $info.binary=[Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($bin)
+          $info.data=[Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($data)
+          $info.type=2
+          $fail=[ObsDiscovery+Failure]::new()
+          try {
+            [ObsDiscovery]::obs_load_plugins([ref]$info,[ref]$fail)
+            Write-Host "OBS_MODULE_SCAN failure_count=$($fail.count)"
+            if([ObsDiscovery]::obs_get_module('bongocat-obs') -eq [IntPtr]::Zero){throw 'OBS 33 loader did not discover and initialize bongocat-obs'}
+            $found=$false
+            for($i=0;$i -lt 512;$i++){
+              $id=[IntPtr]::Zero
+              if(-not [ObsDiscovery]::obs_enum_input_types([UIntPtr]::new([uint64]$i),[ref]$id)){break}
+              if([Runtime.InteropServices.Marshal]::PtrToStringAnsi($id) -eq 'bongocat_obs_live2d'){$found=$true;break}
+            }
+            if(-not $found){throw 'Plugin module loaded but source type not registered'}
+            $src=[ObsDiscovery]::obs_source_create('bongocat_obs_live2d','probe-discovery',[IntPtr]::Zero,[IntPtr]::Zero)
+            if($src -eq [IntPtr]::Zero){throw 'Plugin source_create returned null after auto discovery'}
+            $w=[ObsDiscovery]::obs_source_get_width($src)
+            $h=[ObsDiscovery]::obs_source_get_height($src)
+            [ObsDiscovery]::obs_source_release($src)
+            Write-Host "AUTO_DISCOVERY_OK source=bongocat_obs_live2d dims=$w x $h"
+          } finally {
+            [ObsDiscovery]::obs_module_failure_info_free([ref]$fail)
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($info.binary)
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($info.data)
+            [ObsDiscovery]::obs_shutdown()
+          }
