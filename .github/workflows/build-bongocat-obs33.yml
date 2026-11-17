@@ -44,6 +44,8 @@ jobs:
           $impl = "impl Default for BcInput {`n    fn default() -> Self { unsafe { std::mem::zeroed() } }`n}`n`npub struct Engine {"
           $source = $source.Replace('pub struct Engine {', $impl)
           $source = $source.Replace('motion_clip(group,index)', 'motion_clip(group,*index)')
+          if (-not $source.Contains('left.join("A.png")')) { throw 'Expected test fixture name not found' }
+          $source = $source.Replace('left.join("A.png")', 'left.join("KeyA.png")')
           [IO.File]::WriteAllText((Resolve-Path $path), $source)
       - name: Build and test with Windows MSVC
         shell: pwsh
