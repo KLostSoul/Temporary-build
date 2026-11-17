@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: BongoCat_OBS33_2.4.1_Windows_x64_v0.4.0
+          name: BongoCat_OBS33_2.4.1_v0.5.1_Windows_x64_v0.4.0
           run-id: 44014402669
           repository: KLostSoul/Temporary-build
           github-token: ${{ github.token }}
