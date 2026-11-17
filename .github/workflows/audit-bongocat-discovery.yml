@@ -1,4 +1,4 @@
-name: Audit BongoCat v0.6 OBS33 legacy loader and source transform
+name: Audit BongoCat v0.6.1 keyboard desk defaults and legacy loader
 on:
   push:
     branches: [build/bongocat-obs33]
@@ -15,8 +15,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: BongoCat_OBS33_v0.6.0_ProgramFiles_x64
-          run-id: 44025640541
+          name: BongoCat_OBS33_v0.6.1_ProgramFiles_x64
+          run-id: 44028234495
           repository: KLostSoul/Temporary-build
           github-token: ${{ github.token }}
           path: release
@@ -77,6 +77,13 @@ jobs:
             [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
             public static extern void obs_source_release(IntPtr src);
             [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern IntPtr obs_source_get_settings(IntPtr src);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            [return:MarshalAs(UnmanagedType.I1)]
+            public static extern bool obs_data_get_bool(IntPtr data,string key);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_data_release(IntPtr data);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
             public static extern uint obs_source_get_width(IntPtr src);
             [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
             public static extern uint obs_source_get_height(IntPtr src);
@@ -130,12 +137,20 @@ jobs:
             $w=[ObsDiscovery]::obs_source_get_width($src)
             $h=[ObsDiscovery]::obs_source_get_height($src)
             if($w -ne 640 -or $h -ne 384){throw "Unexpected dimensions $w x $h"}
+            $settings=[ObsDiscovery]::obs_source_get_settings($src)
+            if($settings -eq [IntPtr]::Zero){throw 'Source settings null'}
+            try {
+              foreach($key in @('show_background','keyboard','mouse')){
+                if(-not [ObsDiscovery]::obs_data_get_bool($settings,$key)){throw "Default disabled: $key"}
+              }
+            } finally { [ObsDiscovery]::obs_data_release($settings) }
+            Write-Host 'KEYBOARD_MOUSE_DESK_DEFAULTS=SUCCESS show_background=true keyboard=true mouse=true'
             $flags=[ObsDiscovery]::obs_source_get_output_flags($src)
             if(($flags -band 8) -ne 0){throw 'Custom-draw flag still enabled'}
             $props=[ObsDiscovery]::obs_source_properties($src)
             if($props -eq [IntPtr]::Zero){throw 'Source properties null'}
             try {
-              foreach($key in @('preset','model_file','model_status','keyboard','mouse','gamepad','motion_choice','expression_choice','width','height')){
+              foreach($key in @('preset','model_file','model_status','show_background','keyboard','mouse','gamepad','motion_choice','expression_choice','width','height')){
                 if([ObsDiscovery]::obs_properties_get($props,$key) -eq [IntPtr]::Zero){throw "Missing UI property: $key"}
               }
             } finally { [ObsDiscovery]::obs_properties_destroy($props) }
