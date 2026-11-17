@@ -1,4 +1,4 @@
-name: Audit OBS 33 actual ProgramData plugin discovery
+name: Audit BongoCat v0.6 OBS33 legacy loader and source transform
 on:
   push:
     branches: [build/bongocat-obs33]
@@ -15,30 +15,31 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: BongoCat_OBS33_2.4.1_v0.5.1_Windows_x64
-          run-id: 44019543468
+          name: BongoCat_OBS33_v0.6.0_ProgramFiles_x64
+          run-id: 44025640541
           repository: KLostSoul/Temporary-build
           github-token: ${{ github.token }}
           path: release
-      - name: Install ZIP to exact official ProgramData structure
+      - name: Install legacy ZIP to Program Files-compatible root
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          Expand-Archive release/BongoCat_OBS33_Live2D_Windows_x64.zip -DestinationPath extracted
-          $root=Join-Path $env:ProgramData 'obs-studio/plugins'
+          Expand-Archive release/BongoCat_OBS33_Live2D_ProgramFiles_x64.zip -DestinationPath extracted
+          $root=Join-Path $env:RUNNER_TEMP 'obs-v06-install-root'
           New-Item -ItemType Directory -Force $root | Out-Null
-          Copy-Item extracted/bongocat-obs $root -Recurse -Force
-          $dll=Join-Path $root 'bongocat-obs/bongocat-obs.dll'
-          if(-not (Test-Path $dll)){throw "Incorrect plugin archive layout: $dll"}
-          if(-not (Test-Path (Join-Path $root 'bongocat-obs/data/locale/en-US.ini'))){throw "Missing locale"}
-          Write-Host "PLUGIN_INSTALLED=$dll"
+          Copy-Item extracted/obs-plugins $root -Recurse -Force
+          Copy-Item extracted/data $root -Recurse -Force
+          $dll=Join-Path $root 'obs-plugins/64bit/bongocat-obs.dll'
+          if(-not (Test-Path $dll)){throw "Incorrect legacy DLL archive layout: $dll"}
+          if(-not (Test-Path (Join-Path $root 'data/obs-plugins/bongocat-obs/models/standard/cat.model3.json'))){throw "Missing model"}
+          Write-Host "LEGACY_PLUGIN_INSTALLED=$dll"
       - name: Download and expand exact OBS 33.0.1 official portable release
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           Invoke-WebRequest 'https://github.com/obsproject/obs-studio/releases/download/33.0.1/OBS-Studio-33.0.1-Windows-x64.zip' -OutFile "$env:RUNNER_TEMP/obs33.zip"
           Expand-Archive "$env:RUNNER_TEMP/obs33.zip" -DestinationPath obs -Force
-      - name: Use real OBS 33.0.1 plugin loader enumeration and create input source
+      - name: Use real OBS 33.0.1 legacy plugin loader, test UI and scene transform
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -52,6 +53,7 @@ jobs:
               public int type;
               public IntPtr name;
             }
+            [StructLayout(LayoutKind.Sequential)] public struct Vec2 { public float x,y; }
             [StructLayout(LayoutKind.Sequential)] public struct Failure {
               public IntPtr failedModules;
               public UIntPtr count;
@@ -79,19 +81,39 @@ jobs:
             [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
             public static extern uint obs_source_get_height(IntPtr src);
             [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern uint obs_source_get_output_flags(IntPtr src);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern IntPtr obs_source_properties(IntPtr src);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            public static extern IntPtr obs_properties_get(IntPtr props,string name);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_properties_destroy(IntPtr props);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            public static extern IntPtr obs_scene_create(string name);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern IntPtr obs_scene_add(IntPtr scene,IntPtr src);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_sceneitem_set_pos(IntPtr item,ref Vec2 pos);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_sceneitem_get_pos(IntPtr item,out Vec2 pos);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_scene_release(IntPtr scene);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
             public static extern void obs_shutdown();
           }
           '@
           if(-not [ObsDiscovery]::SetDllDirectory($obs.DirectoryName)){throw 'SetDllDirectory failed'}
           if(-not [ObsDiscovery]::obs_startup('en-US',[IntPtr]::Zero,[IntPtr]::Zero)){throw 'obs_startup failed'}
-          $root=Join-Path $env:ProgramData 'obs-studio/plugins'
-          $bin=Join-Path $root '%module%'
-          $data=Join-Path $root '%module%/data'
+          $root=Join-Path $env:RUNNER_TEMP 'obs-v06-install-root'
+          $bin=Join-Path $root 'obs-plugins/64bit'
+          $data=Join-Path $root 'data/obs-plugins/%module%'
           $info=[ObsDiscovery+ModuleInfo]::new()
           $info.binary=[Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($bin)
           $info.data=[Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($data)
-          $info.type=2
+          $info.type=3
           $fail=[ObsDiscovery+Failure]::new()
+          $scene=[IntPtr]::Zero
+          $src=[IntPtr]::Zero
           try {
             [ObsDiscovery]::obs_load_plugins([ref]$info,[ref]$fail)
             Write-Host "OBS_MODULE_SCAN failure_count=$($fail.count)"
@@ -107,9 +129,30 @@ jobs:
             if($src -eq [IntPtr]::Zero){throw 'Plugin source_create returned null after auto discovery'}
             $w=[ObsDiscovery]::obs_source_get_width($src)
             $h=[ObsDiscovery]::obs_source_get_height($src)
-            [ObsDiscovery]::obs_source_release($src)
-            Write-Host "AUTO_DISCOVERY_OK source=bongocat_obs_live2d dims=$w x $h"
+            if($w -ne 640 -or $h -ne 384){throw "Unexpected dimensions $w x $h"}
+            $flags=[ObsDiscovery]::obs_source_get_output_flags($src)
+            if(($flags -band 8) -ne 0){throw 'Custom-draw flag still enabled'}
+            $props=[ObsDiscovery]::obs_source_properties($src)
+            if($props -eq [IntPtr]::Zero){throw 'Source properties null'}
+            try {
+              foreach($key in @('preset','model_file','model_status','keyboard','mouse','gamepad','motion_choice','expression_choice','width','height')){
+                if([ObsDiscovery]::obs_properties_get($props,$key) -eq [IntPtr]::Zero){throw "Missing UI property: $key"}
+              }
+            } finally { [ObsDiscovery]::obs_properties_destroy($props) }
+            $scene=[ObsDiscovery]::obs_scene_create('bongocat-v06-scene')
+            if($scene -eq [IntPtr]::Zero){throw 'Cannot create scene'}
+            $item=[ObsDiscovery]::obs_scene_add($scene,$src)
+            if($item -eq [IntPtr]::Zero){throw 'Cannot add BongoCat source to scene'}
+            $pos=[ObsDiscovery+Vec2]::new()
+            $pos.x=313;$pos.y=157
+            [ObsDiscovery]::obs_sceneitem_set_pos($item,[ref]$pos)
+            $actual=[ObsDiscovery+Vec2]::new()
+            [ObsDiscovery]::obs_sceneitem_get_pos($item,[ref]$actual)
+            if([Math]::Abs($actual.x-313) -gt .001 -or [Math]::Abs($actual.y-157) -gt .001){throw 'Scene position did not move'}
+            Write-Host "AUTO_LEGACY_DISCOVERY_PROPERTIES_TRANSFORM_OK source=bongocat_obs_live2d dims=$w x $h"
           } finally {
+            if($scene -ne [IntPtr]::Zero){[ObsDiscovery]::obs_scene_release($scene)}
+            if($src -ne [IntPtr]::Zero){[ObsDiscovery]::obs_source_release($src)}
             [ObsDiscovery]::obs_module_failure_info_free([ref]$fail)
             [Runtime.InteropServices.Marshal]::FreeHGlobal($info.binary)
             [Runtime.InteropServices.Marshal]::FreeHGlobal($info.data)
