@@ -67,3 +67,41 @@ jobs:
           [Loader]::FreeLibrary($pluginHandle) | Out-Null
           [Loader]::FreeLibrary($obsHandle) | Out-Null
           Write-Host 'Binary load only; not a scene/render test'
+
+      - name: Initialize real libobs and verify BongoCat source registration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $obs=Get-ChildItem obs -Filter obs.dll -Recurse -File | Select-Object -First 1
+          $dll=Get-ChildItem plugin -Filter bongocat-obs.dll -Recurse -File | Select-Object -First 1
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class ObsHost {
+            [DllImport("kernel32.dll", EntryPoint="SetDllDirectoryW",CharSet=CharSet.Unicode)] public static extern bool SetDir(string path);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            [return:MarshalAs(UnmanagedType.I1)] public static extern bool obs_startup(string locale,IntPtr config,IntPtr store);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)] public static extern int obs_open_module(out IntPtr module,string path,string data_path);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)]
+            [return:MarshalAs(UnmanagedType.I1)] public static extern bool obs_init_module(IntPtr module);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)]
+            [return:MarshalAs(UnmanagedType.I1)] public static extern bool obs_enum_input_types(UIntPtr index,out IntPtr id);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern void obs_shutdown();
+          }
+          '@
+          if (-not [ObsHost]::SetDir($obs.DirectoryName)) {throw 'SetDllDirectory failed'}
+          if (-not [ObsHost]::obs_startup('en-US',[IntPtr]::Zero,[IntPtr]::Zero)) {throw 'obs_startup failed'}
+          try {
+            $mod=[IntPtr]::Zero
+            $status=[ObsHost]::obs_open_module([ref]$mod,$dll.FullName,(Join-Path $dll.Directory.FullName 'data'))
+            if($status -ne 0 -or $mod -eq [IntPtr]::Zero){throw "obs_open_module failed: $status"}
+            if(-not [ObsHost]::obs_init_module($mod)){throw 'obs_init_module failed'}
+            $found=$false
+            for($i=0;$i -lt 256;$i++){
+              $id=[IntPtr]::Zero
+              if(-not [ObsHost]::obs_enum_input_types([UIntPtr]::new([uint64]$i),[ref]$id)){break}
+              if([Runtime.InteropServices.Marshal]::PtrToStringAnsi($id) -eq 'bongocat_obs_live2d'){$found=$true;break}
+            }
+            if(-not $found){throw 'BongoCat source not registered'}
+            Write-Host 'OBS_MODULE_REGISTRATION=SUCCESS source=bongocat_obs_live2d'
+          } finally { [ObsHost]::obs_shutdown() }
