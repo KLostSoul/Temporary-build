@@ -1,0 +1,38 @@
+name: Retrieve old Bongobs-Cat compact keyboard resources
+on:
+  push:
+    branches: [build/bongocat-obs33]
+    paths: ['.github/workflows/retrieve-bongobs-art-reference.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  resources:
+    runs-on: windows-2022
+    steps:
+      - name: Fetch original images from historical upstream repository
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $root='https://raw.githubusercontent.com/a1928370421/Bongobs-Cat-Plugin/6075d8fe0c9a7b73a2d5d7155bb7b9c8b39cd6fe/Resources/Bango%20Cat/mode'
+          New-Item -ItemType Directory -Force 'ref/standard/keyboard','ref/keyboard' | Out-Null
+          Invoke-WebRequest "$root/standard/bg.png" -OutFile 'ref/standard/bg.png'
+          Invoke-WebRequest "$root/standard/catbg.png" -OutFile 'ref/standard/catbg.png'
+          Invoke-WebRequest "$root/keyboard/bg.png" -OutFile 'ref/keyboard/bg.png'
+          Invoke-WebRequest "$root/keyboard/catbg.png" -OutFile 'ref/keyboard/catbg.png'
+          foreach($i in 0..14) {Invoke-WebRequest "$root/standard/keyboard/$i.png" -OutFile "ref/standard/keyboard/$i.png"}
+          $code=@'
+          from PIL import Image
+          from pathlib import Path
+          import json
+          for p in Path("ref").rglob("*.png"):
+              im=Image.open(p).convert("RGBA")
+              print(json.dumps(dict(file=str(p),size=im.size,bbox=im.getchannel("A").getbbox())))
+          '@
+          $code | Set-Content -Path 'inspect.py' -Encoding utf8
+          python -m pip install pillow --quiet
+          python inspect.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Old_Bongobs_Compact_Keyboard_Reference
+          path: ref/
