@@ -86,6 +86,10 @@ jobs:
             [return:MarshalAs(UnmanagedType.I1)] public static extern bool obs_init_module(IntPtr module);
             [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)]
             [return:MarshalAs(UnmanagedType.I1)] public static extern bool obs_enum_input_types(UIntPtr index,out IntPtr id);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern IntPtr obs_source_create(string id, string name, IntPtr settings, IntPtr hotkeys);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern uint obs_source_get_width(IntPtr source);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern uint obs_source_get_height(IntPtr source);
+            [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern void obs_source_release(IntPtr source);
             [DllImport("obs.dll", CallingConvention=CallingConvention.Cdecl)] public static extern void obs_shutdown();
           }
           '@
@@ -104,4 +108,11 @@ jobs:
             }
             if(-not $found){throw 'BongoCat source not registered'}
             Write-Host 'OBS_MODULE_REGISTRATION=SUCCESS source=bongocat_obs_live2d'
+            $src=[ObsHost]::obs_source_create('bongocat_obs_live2d','audit-standard',[IntPtr]::Zero,[IntPtr]::Zero)
+            if($src -eq [IntPtr]::Zero){throw 'obs_source_create returned null'}
+            $width=[ObsHost]::obs_source_get_width($src)
+            $height=[ObsHost]::obs_source_get_height($src)
+            [ObsHost]::obs_source_release($src)
+            if($width -ne 640 -or $height -ne 384){throw "Incorrect defaults: $width x $height"}
+            Write-Host "OBS_SOURCE_CREATE_SUCCESS dims=$width x $height"
           } finally { [ObsHost]::obs_shutdown() }
