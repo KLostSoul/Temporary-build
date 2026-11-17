@@ -1,4 +1,4 @@
-name: Audit BongoCat OBS 33 v0.4.0 DLL runtime and model switch
+name: Audit BongoCat OBS 33 v0.5.1 DLL and model switch
 
 on:
   push:
@@ -17,8 +17,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: BongoCat_OBS33_2.4.1_v0.5.1_Windows_x64_v0.4.0
-          run-id: 44014402669
+          name: BongoCat_OBS33_2.4.1_v0.5.1_Windows_x64
+          run-id: 44019543468
           repository: KLostSoul/Temporary-build
           github-token: ${{ github.token }}
           path: release
