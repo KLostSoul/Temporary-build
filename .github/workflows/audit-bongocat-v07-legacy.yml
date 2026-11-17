@@ -155,8 +155,11 @@ jobs:
             if([Math]::Abs($actual.x-313) -gt .001 -or [Math]::Abs($actual.y-157) -gt .001){throw 'Source transform was not applied'}
             Write-Host 'OBS33_LEGACY_AUTO_DISCOVERY_SOURCE_MODEL_PROPERTIES_AND_SCENE_MOVEMENT_OK'
           } finally {
-            if($scene -ne [IntPtr]::Zero){[BongoV07Probe]::obs_scene_release($scene)}
+            # Release the original source reference before its enclosing scene;
+            # the scene owns a separate ref and destruction itself is deferred.
             if($src -ne [IntPtr]::Zero){[BongoV07Probe]::obs_source_release($src)}
+            if($scene -ne [IntPtr]::Zero){[BongoV07Probe]::obs_scene_release($scene)}
+            Start-Sleep -Milliseconds 400
             [BongoV07Probe]::obs_module_failure_info_free([ref]$failure)
             [Runtime.InteropServices.Marshal]::FreeHGlobal($info.binary)
             [Runtime.InteropServices.Marshal]::FreeHGlobal($info.data)
