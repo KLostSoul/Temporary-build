@@ -1,0 +1,69 @@
+name: Audit BongoCat OBS 33 DLL runtime load
+
+on:
+  push:
+    branches: [build/bongocat-obs33]
+    paths: ['.github/workflows/audit-bongocat-obs33.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  windows-dll-load:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: BongoCat_OBS33_2.4.1_Windows_x64
+          run-id: 44011658176
+          repository: KLostSoul/Temporary-build
+          github-token: ${{ github.token }}
+          path: release
+      - name: Download official OBS 33.0.1 portable zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $uri='https://github.com/obsproject/obs-studio/releases/download/33.0.1/OBS-Studio-33.0.1-Windows-x64.zip'
+          Invoke-WebRequest $uri -OutFile "$env:RUNNER_TEMP\obs.zip"
+          Expand-Archive "$env:RUNNER_TEMP\obs.zip" -DestinationPath obs -Force
+          Expand-Archive release/BongoCat_OBS33_Live2D_Windows_x64.zip -DestinationPath plugin -Force
+      - name: Test native DLL loader against original OBS release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $obs=Get-ChildItem obs -Filter obs.dll -Recurse -File | Select-Object -First 1
+          $dll=Get-ChildItem plugin -Filter bongocat-obs.dll -Recurse -File | Select-Object -First 1
+          if (-not $obs -or -not $dll) { throw 'DLL files missing' }
+          Write-Host "OBS: $($obs.FullName)"
+          Write-Host "Plugin: $($dll.FullName)"
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Loader {
+            [DllImport("kernel32.dll", EntryPoint="SetDllDirectoryW", CharSet=CharSet.Unicode)]
+            public static extern bool SetDir(string path);
+            [DllImport("kernel32.dll", EntryPoint="LoadLibraryW", CharSet=CharSet.Unicode, SetLastError=true)]
+            public static extern IntPtr Load(string path);
+            [DllImport("kernel32.dll", EntryPoint="GetProcAddress", CharSet=CharSet.Ansi)]
+            public static extern IntPtr Proc(IntPtr handle,string name);
+            [DllImport("kernel32.dll")] public static extern bool FreeLibrary(IntPtr handle);
+            [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate uint Ver();
+          }
+          '@
+          if (-not [Loader]::SetDir($obs.DirectoryName)) { throw 'SetDllDirectory failed' }
+          $obsHandle=[Loader]::Load($obs.FullName)
+          if ($obsHandle -eq [IntPtr]::Zero) {throw "obs.dll load failure Win32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"}
+          $pluginHandle=[Loader]::Load($dll.FullName)
+          if ($pluginHandle -eq [IntPtr]::Zero) {throw "plugin load failure Win32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"}
+          foreach($entry in @('obs_module_ver','obs_module_description','obs_module_load','obs_module_set_pointer','obs_module_set_locale')){
+            if ([Loader]::Proc($pluginHandle,$entry) -eq [IntPtr]::Zero) { throw "Export missing: $entry" }
+          }
+          $ver=[Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer([Loader]::Proc($pluginHandle,'obs_module_ver'), [Loader+Ver])
+          if ($ver.Invoke() -eq 0) { throw 'Invalid module version' }
+          Write-Host "LOAD_SUCCESS; OBS module ABI=$($ver.Invoke())"
+          [Loader]::FreeLibrary($pluginHandle) | Out-Null
+          [Loader]::FreeLibrary($obsHandle) | Out-Null
+          Write-Host 'Binary load only; not a scene/render test'
