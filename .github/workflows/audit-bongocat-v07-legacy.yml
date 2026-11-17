@@ -1,0 +1,164 @@
+name: Audit BongoCat OBS33 v0.7 compact keyboard and source transform
+on:
+  push:
+    branches: [build/bongocat-obs33]
+    paths: ['.github/workflows/audit-bongocat-v07-legacy.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  legacy-plugin-auto-discovery:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: BongoCat_OBS33_v0.6.1_ProgramFiles_x64
+          run-id: 44030251855
+          repository: KLostSoul/Temporary-build
+          github-token: ${{ github.token }}
+          path: release
+      - name: Unpack Program Files layout to isolated OBS root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Expand-Archive 'release/BongoCat_OBS33_Live2D_ProgramFiles_x64.zip' -DestinationPath extracted
+          $root=Join-Path $env:RUNNER_TEMP 'obs-v07-install-root'
+          New-Item -ItemType Directory -Force $root | Out-Null
+          Copy-Item extracted/obs-plugins $root -Recurse -Force
+          Copy-Item extracted/data $root -Recurse -Force
+          if(-not (Test-Path (Join-Path $root 'obs-plugins/64bit/bongocat-obs.dll'))) {throw 'Legacy DLL at wrong path'}
+          if(-not (Test-Path (Join-Path $root 'data/obs-plugins/bongocat-obs/models/standard/cat.model3.json'))) {throw 'Legacy model at wrong path'}
+          $compact = Join-Path $root 'data/obs-plugins/bongocat-obs/models/standard/resources'
+          $art = @(Get-ChildItem (Join-Path $compact 'left-keys') -Filter '*.png' -File)
+          if ($art.Count -ne 15) {throw "Expected 15 classic keys, found $($art.Count)"}
+          $bg=(Get-FileHash (Join-Path $compact 'background.png') -Algorithm SHA256).Hash.ToLowerInvariant()
+          if($bg -ne '54ff12e81eb3e67310f5bfdd164a9bb36c574983a22334806f015dd281d5505a'){throw "Original compact background SHA mismatch: $bg"}
+          Write-Host "LEGACY_COMPACT_KEYBOARD_OK total=$($art.Count)"
+          Write-Host 'LEGACY_INSTALL_FILES_OK'
+      - name: Download official OBS 33.0.1 Windows x64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Invoke-WebRequest 'https://github.com/obsproject/obs-studio/releases/download/33.0.1/OBS-Studio-33.0.1-Windows-x64.zip' -OutFile "$env:RUNNER_TEMP/obs33.zip"
+          Expand-Archive "$env:RUNNER_TEMP/obs33.zip" -DestinationPath obs -Force
+      - name: Real OBS legacy loader - model, UI properties, transform
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $obs=Get-ChildItem obs -Filter obs.dll -Recurse -File | Select-Object -First 1
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class BongoV07Probe {
+            [StructLayout(LayoutKind.Sequential)] public struct ModuleInfo {
+              public IntPtr binary, data;
+              public int type;
+              public IntPtr name;
+            }
+            [StructLayout(LayoutKind.Sequential)] public struct Failure {
+              public IntPtr failedModules;
+              public UIntPtr count;
+            }
+            [StructLayout(LayoutKind.Sequential)] public struct Vec2 {
+              public float x,y;
+            }
+            [DllImport("kernel32.dll",EntryPoint="SetDllDirectoryW",CharSet=CharSet.Unicode)]
+            public static extern bool SetDllDirectory(string path);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            [return:MarshalAs(UnmanagedType.I1)]
+            public static extern bool obs_startup(string locale,IntPtr config,IntPtr store);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_load_plugins(ref ModuleInfo module,ref Failure fail);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_module_failure_info_free(ref Failure fail);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            public static extern IntPtr obs_get_module(string name);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            [return:MarshalAs(UnmanagedType.I1)]
+            public static extern bool obs_enum_input_types(UIntPtr index,out IntPtr id);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            public static extern IntPtr obs_source_create(string id,string name,IntPtr settings,IntPtr hotkeys);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_source_release(IntPtr source);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern uint obs_source_get_width(IntPtr source);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern uint obs_source_get_height(IntPtr source);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern uint obs_source_get_output_flags(IntPtr source);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern IntPtr obs_source_properties(IntPtr source);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            public static extern IntPtr obs_properties_get(IntPtr props,string name);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_properties_destroy(IntPtr props);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl,CharSet=CharSet.Ansi)]
+            public static extern IntPtr obs_scene_create(string name);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern IntPtr obs_scene_add(IntPtr scene,IntPtr source);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_sceneitem_set_pos(IntPtr item,ref Vec2 pos);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_sceneitem_get_pos(IntPtr item,out Vec2 pos);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_scene_release(IntPtr scene);
+            [DllImport("obs.dll",CallingConvention=CallingConvention.Cdecl)]
+            public static extern void obs_shutdown();
+          }
+          '@
+          if(-not [BongoV07Probe]::SetDllDirectory($obs.DirectoryName)){throw 'SetDllDirectory failed'}
+          if(-not [BongoV07Probe]::obs_startup('en-US',[IntPtr]::Zero,[IntPtr]::Zero)){throw 'OBS startup failed'}
+          $root=Join-Path $env:RUNNER_TEMP 'obs-v07-install-root'
+          $info=[BongoV07Probe+ModuleInfo]::new()
+          $info.binary=[Runtime.InteropServices.Marshal]::StringToHGlobalAnsi((Join-Path $root 'obs-plugins/64bit'))
+          $info.data=[Runtime.InteropServices.Marshal]::StringToHGlobalAnsi((Join-Path $root 'data/obs-plugins/%module%'))
+          $info.type=3
+          $failure=[BongoV07Probe+Failure]::new()
+          $src=[IntPtr]::Zero
+          $scene=[IntPtr]::Zero
+          try {
+            [BongoV07Probe]::obs_load_plugins([ref]$info,[ref]$failure)
+            Write-Host "OBS_LEGACY_SCAN failure_count=$($failure.count)"
+            if([BongoV07Probe]::obs_get_module('bongocat-obs') -eq [IntPtr]::Zero) {throw 'OBS did not load legacy plugin'}
+            $found=$false
+            for($i=0;$i -lt 512;$i++){
+              $name=[IntPtr]::Zero
+              if(-not [BongoV07Probe]::obs_enum_input_types([UIntPtr]::new([uint64]$i),[ref]$name)){break}
+              if([Runtime.InteropServices.Marshal]::PtrToStringAnsi($name) -eq 'bongocat_obs_live2d'){$found=$true;break}
+            }
+            if(-not $found){throw 'Source missing from OBS input source registry'}
+            $src=[BongoV07Probe]::obs_source_create('bongocat_obs_live2d','bongocat-v07-smoke',[IntPtr]::Zero,[IntPtr]::Zero)
+            if($src -eq [IntPtr]::Zero){throw 'Source create failed'}
+            $width=[BongoV07Probe]::obs_source_get_width($src)
+            $height=[BongoV07Probe]::obs_source_get_height($src)
+            if($width -ne 640 -or $height -ne 384) {throw "Wrong source dimensions $width x $height"}
+            $flags=[BongoV07Probe]::obs_source_get_output_flags($src)
+            if(($flags -band 8) -ne 0) {throw 'Plugin still has custom-draw flag'}
+            $props=[BongoV07Probe]::obs_source_properties($src)
+            if($props -eq [IntPtr]::Zero){throw 'Source properties unavailable'}
+            try{
+              foreach($key in @('preset','model_file','model_status','keyboard','mouse','gamepad','motion_choice','expression_choice','width','height')){
+                if([BongoV07Probe]::obs_properties_get($props,$key) -eq [IntPtr]::Zero) {throw "Missing OBS option: $key"}
+              }
+            } finally {[BongoV07Probe]::obs_properties_destroy($props)}
+            $scene=[BongoV07Probe]::obs_scene_create('bongocat-v07-scene')
+            if($scene -eq [IntPtr]::Zero){throw 'Scene create failed'}
+            $item=[BongoV07Probe]::obs_scene_add($scene,$src)
+            if($item -eq [IntPtr]::Zero){throw 'Cannot add source to scene'}
+            $pos=[BongoV07Probe+Vec2]::new();$pos.x=313;$pos.y=157
+            [BongoV07Probe]::obs_sceneitem_set_pos($item,[ref]$pos)
+            $actual=[BongoV07Probe+Vec2]::new()
+            [BongoV07Probe]::obs_sceneitem_get_pos($item,[ref]$actual)
+            if([Math]::Abs($actual.x-313) -gt .001 -or [Math]::Abs($actual.y-157) -gt .001){throw 'Source transform was not applied'}
+            Write-Host 'OBS33_LEGACY_AUTO_DISCOVERY_SOURCE_MODEL_PROPERTIES_AND_SCENE_MOVEMENT_OK'
+          } finally {
+            if($scene -ne [IntPtr]::Zero){[BongoV07Probe]::obs_scene_release($scene)}
+            if($src -ne [IntPtr]::Zero){[BongoV07Probe]::obs_source_release($src)}
+            [BongoV07Probe]::obs_module_failure_info_free([ref]$failure)
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($info.binary)
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($info.data)
+            [BongoV07Probe]::obs_shutdown()
+          }
