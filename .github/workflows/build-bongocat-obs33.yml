@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   windows-x64:
-    name: Windows x64 v0.6.1 DLL and two install ZIP layouts
+    name: Windows x64 v0.8.0 DLL and two install ZIP layouts
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
@@ -49,7 +49,7 @@ jobs:
             $names = @($archive.Entries | ForEach-Object FullName)
             if ($names -notcontains 'obs-plugins/64bit/bongocat-obs.dll') {throw 'Legacy DLL path incorrect'}
             if ($names -notcontains 'data/obs-plugins/bongocat-obs/models/standard/cat.model3.json') {throw 'Legacy model path incorrect'}
-            Write-Host 'PROGRAMFILES_LEGACY_INSTALL_LAYOUT_OK'
+            if (@($names | Where-Object { $_ -match '\\.(flac|wav|ogg|mp3)
           } finally { $archive.Dispose() }
           $data=[IO.File]::ReadAllBytes((Resolve-Path $dll))
           if($data[0] -ne 0x4d -or $data[1] -ne 0x5a){throw 'Missing MZ signature'}
@@ -59,20 +59,54 @@ jobs:
       - name: Upload installable OBS plugin
         uses: actions/upload-artifact@v4
         with:
-          name: BongoCat_OBS33_2.4.1_v0.6.1_Windows_x64
+          name: BongoCat_OBS33_2.4.1_v0.8.0_Windows_x64
           path: plugin/dist/BongoCat_OBS33_Live2D_Windows_x64.zip
           if-no-files-found: error
       - name: Upload OBS Program Files legacy plugin install ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: BongoCat_OBS33_v0.6.1_ProgramFiles_x64
+          name: BongoCat_OBS33_v0.8.0_ProgramFiles_x64
           path: plugin/dist/BongoCat_OBS33_Live2D_ProgramFiles_x64.zip
           if-no-files-found: error
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: BongoCat_OBS33_v0.6.1_diagnostics
+          name: BongoCat_OBS33_v0.8.0_diagnostics
+          path: |
+            bongocat-build-log.txt
+            plugin/build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
+ }).Count -ne 0) {throw 'Unexpected effect audio packed in silent plugin'}
+            $manifest=$archive.GetEntry('data/obs-plugins/bongocat-obs/models/standard/cat.model3.json')
+            if(-not $manifest){throw 'Missing standard cat model manifest'}
+            $reader=[IO.StreamReader]::new($manifest.Open())
+            try { $model_json=$reader.ReadToEnd() } finally {$reader.Dispose()}
+            if($model_json -match '"Sound"\s*:'){throw 'Sound metadata still present in model manifest'}
+            Write-Host 'PROGRAMFILES_LEGACY_INSTALL_LAYOUT_OK; NO_SOUND_FILES_OR_METADATA'
+          } finally { $archive.Dispose() }
+          $data=[IO.File]::ReadAllBytes((Resolve-Path $dll))
+          if($data[0] -ne 0x4d -or $data[1] -ne 0x5a){throw 'Missing MZ signature'}
+          $pe=[BitConverter]::ToInt32($data,0x3c)
+          if([BitConverter]::ToUInt16($data,$pe+4) -ne 0x8664){throw 'DLL is not Windows x64'}
+          Get-FileHash $dll -Algorithm SHA256 | Format-List
+      - name: Upload installable OBS plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: BongoCat_OBS33_2.4.1_v0.8.0_Windows_x64
+          path: plugin/dist/BongoCat_OBS33_Live2D_Windows_x64.zip
+          if-no-files-found: error
+      - name: Upload OBS Program Files legacy plugin install ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: BongoCat_OBS33_v0.8.0_ProgramFiles_x64
+          path: plugin/dist/BongoCat_OBS33_Live2D_ProgramFiles_x64.zip
+          if-no-files-found: error
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BongoCat_OBS33_v0.8.0_diagnostics
           path: |
             bongocat-build-log.txt
             plugin/build/CMakeFiles/CMakeConfigureLog.yaml
