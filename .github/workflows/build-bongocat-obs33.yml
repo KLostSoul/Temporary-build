@@ -1,4 +1,4 @@
-name: Build BongoCat Live2D OBS 33 DLL
+name: Build BongoCat Live2D OBS 33 DLL v0.4.0
 
 on:
   push:
@@ -23,30 +23,6 @@ jobs:
         run: |
           python -c "import pathlib,base64,lzma,io,tarfile; d=base64.b64decode(pathlib.Path('bongocat_payload.xz.b64').read_text()); tarfile.open(fileobj=io.BytesIO(lzma.decompress(d)),mode='r:').extractall('plugin')"
           if (-not (Test-Path plugin/tools/build_windows.ps1)) { throw 'Payload failed to unpack' }
-      - name: Fix OBS 33 SDK install dependencies
-        shell: pwsh
-        run: |
-          $path = 'plugin/tools/build_windows.ps1'
-          $script = Get-Content $path -Raw
-          $old = "        Exec 'cmake' @('--install',"
-          $new = "        Exec 'cmake' @('--build',`$obsBuild,'--target','obs-frontend-api','--config','Release','--parallel','4')`n$old"
-          if (-not $script.Contains($old)) { throw 'Expected OBS SDK install command not found' }
-          [IO.File]::WriteAllText((Resolve-Path $path), $script.Replace($old, $new))
-      - name: Fix Rust ABI defaults and motion index
-        shell: pwsh
-        run: |
-          $path = 'plugin/engine/src/lib.rs'
-          $source = [IO.File]::ReadAllText((Resolve-Path $path))
-          if (-not $source.Contains('#[derive(Clone, Copy, Default)]')) { throw 'BcInput derive not found' }
-          if (-not $source.Contains('pub struct Engine {')) { throw 'Rust engine declaration not found' }
-          if (-not $source.Contains('motion_clip(group,index)')) { throw 'Rust motion index site not found' }
-          $source = $source.Replace('#[derive(Clone, Copy, Default)]', '#[derive(Clone, Copy)]')
-          $impl = "impl Default for BcInput {`n    fn default() -> Self { unsafe { std::mem::zeroed() } }`n}`n`npub struct Engine {"
-          $source = $source.Replace('pub struct Engine {', $impl)
-          $source = $source.Replace('motion_clip(group,index)', 'motion_clip(group,*index)')
-          if (-not $source.Contains('left.join("A.png")')) { throw 'Expected test fixture name not found' }
-          $source = $source.Replace('left.join("A.png")', 'left.join("KeyA.png")')
-          [IO.File]::WriteAllText((Resolve-Path $path), $source)
       - name: Build and test with Windows MSVC
         shell: pwsh
         run: |
@@ -70,7 +46,7 @@ jobs:
       - name: Upload install ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: BongoCat_OBS33_2.4.1_Windows_x64
+          name: BongoCat_OBS33_2.4.1_Windows_x64_v0.4.0
           path: plugin/dist/BongoCat_OBS33_Live2D_Windows_x64.zip
           if-no-files-found: error
       - name: Upload build diagnostics
