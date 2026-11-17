@@ -32,6 +32,19 @@ jobs:
           $new = "        Exec 'cmake' @('--build',`$obsBuild,'--target','obs-frontend-api','--config','Release','--parallel','4')`n$old"
           if (-not $script.Contains($old)) { throw 'Expected OBS SDK install command not found' }
           [IO.File]::WriteAllText((Resolve-Path $path), $script.Replace($old, $new))
+      - name: Fix Rust ABI defaults and motion index
+        shell: pwsh
+        run: |
+          $path = 'plugin/engine/src/lib.rs'
+          $source = [IO.File]::ReadAllText((Resolve-Path $path))
+          if (-not $source.Contains('#[derive(Clone, Copy, Default)]')) { throw 'BcInput derive not found' }
+          if (-not $source.Contains('pub struct Engine {')) { throw 'Rust engine declaration not found' }
+          if (-not $source.Contains('motion_clip(group,index)')) { throw 'Rust motion index site not found' }
+          $source = $source.Replace('#[derive(Clone, Copy, Default)]', '#[derive(Clone, Copy)]')
+          $impl = "impl Default for BcInput {`n    fn default() -> Self { unsafe { std::mem::zeroed() } }`n}`n`npub struct Engine {"
+          $source = $source.Replace('pub struct Engine {', $impl)
+          $source = $source.Replace('motion_clip(group,index)', 'motion_clip(group,*index)')
+          [IO.File]::WriteAllText((Resolve-Path $path), $source)
       - name: Build and test with Windows MSVC
         shell: pwsh
         run: |
